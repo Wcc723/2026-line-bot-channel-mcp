@@ -1,0 +1,25 @@
+{
+  "name": "claude-channel-line",
+  "version": "0.0.1",
+  "description": "LINE Messaging API channel for Claude Code",
+  "type": "module",
+  "private": true,
+  "main": "server.ts",
+  "scripts": {
+    "start": "bun server.ts",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "msw": "^2.6.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "line",
+  "description": "LINE Messaging API channel for Claude Code — 雙向訊息互動，含白名單與 Cloudflare Tunnel 整合",
+  "version": "0.0.1",
+  "author": {
+    "name": "wcc723"
+  },
+  "homepage": "https://github.com/wcc723/2026-line-bot-channel-mcp",
+  "repository": "https://github.com/wcc723/2026-line-bot-channel-mcp",
+  "license": "Apache-2.0"
+}
