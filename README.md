@@ -3,7 +3,7 @@
 把 **LINE Messaging API** 串到 **Claude Code** 做雙向訊息互動的 channel plugin。
 
 - Claude 可主動透過 LINE 發訊息給你
-- 你在 LINE 傳的訊息會被推進 Claude session，由 Claude 回覆
+- 你在 LINE 傳的訊息會被推進 Claude session，由 Claude 看到並回覆
 - 內建白名單（pair / allowlist / disabled 三種 policy）
 - 整合 Cloudflare Tunnel 三種模式（quick / named / external）
 
@@ -27,19 +27,14 @@ LINE 用戶 ──► LINE Platform
                   LINE Platform ◄──────┘
 ```
 
-Channel 是一個 MCP server 子進程（透過 `claude --channels` 啟動），同時在本機跑 webhook server 接收 LINE 推送，並暴露 MCP tools 讓 Claude 對 LINE 發訊息。
+Channel 是一個 MCP server 子進程（透過 `claude --dangerously-load-development-channels` 啟動），同時在本機跑 webhook server 接收 LINE 推送，並暴露 MCP tools 讓 Claude 對 LINE 發訊息。
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.x（package manager + runtime）
-- [Claude Code](https://claude.com/claude-code)
-- [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/install-and-setup/installation/)（quick / named 模式必需）
+- [Bun](https://bun.sh) 1.x（package manager + runtime）— 建議 `npm install -g bun` 或 `brew install oven-sh/bun/bun`（brew 失敗請用 npm）
+- [Claude Code](https://claude.com/claude-code) 2.1.123+
+- [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/install-and-setup/installation/)（quick / named 模式必需）：`brew install cloudflared`
 - 一組 LINE Messaging API channel 的 **access token** 與 **channel secret**
-
-```bash
-brew install oven-sh/bun/bun
-brew install cloudflared
-```
 
 ## Concepts
 
@@ -56,19 +51,44 @@ LINE 帳號層級對照：
 - **Channel access token**（長期）→ 用來呼叫 LINE API 發訊息
 - **Channel secret** → 用來驗證 LINE webhook 的簽章
 
-## Quick Start (30 分鐘)
+## Quick Start (≈30 分鐘)
 
-> 7 步快速上手。詳細說明見下節。
+> 9 步上手。詳細說明見下節。
 
-1. 安裝依賴：`brew install oven-sh/bun/bun cloudflared`
-2. 在 [LINE Official Account Manager](https://manager.line.biz/) 建帳號 → 啟用 Messaging API → 進入 [LINE Developers Console](https://developers.line.biz/console/) 取 **Channel access token** 與 **Channel secret**
-3. **關閉**「自動回覆訊息」與「歡迎訊息」（在 Official Account Manager 的「回應設定」）
-4. 安裝 plugin：在 Claude Code 跑 `/plugin install line@wcc723/2026-line-bot-channel-mcp`
-5. 啟動 channel：`claude --channels plugin:line@wcc723/2026-line-bot-channel-mcp`
-6. 在 session 設定 token：`/line:configure set-token <TOKEN>` 然後 `/line:configure set-secret <SECRET>`，**重啟 channel**
-7. 重啟後跑 `/line:tunnel url` 取 webhook URL，貼到 LINE Developers Console > Messaging API settings > **Webhook URL** 並按 **Verify** 拿綠勾。加 bot 為好友、傳第一則訊息 → 在 session 跑 `/line:access pair <code>` 完成配對
+1. 安裝依賴：`brew install cloudflared && npm install -g bun`
+2. 在 [LINE Official Account Manager](https://manager.line.biz/) 建帳號 → 啟用 Messaging API → **Settings → Response settings**：
+   - **「Chat」→ Off**（很多人卡這——詳見 Troubleshooting）
+   - **「Webhook」→ On**
+   - **「Auto-response messages」→ Off**
+   - **「Greeting messages」→ Off**
+3. 進入 [LINE Developers Console](https://developers.line.biz/console/)：
+   - **Basic settings** 分頁底部複製 **Channel secret**
+   - **Messaging API** 分頁底部 Issue + 複製 **Channel access token (long-lived)**
+4. 安裝 plugin：
+   ```bash
+   claude plugin marketplace add wcc723/2026-line-bot-channel-mcp
+   claude plugin install line@line-bot-channel
+   ```
+5. 寫 token / secret 到 `~/.claude/channels/line/.env`：
+   ```
+   LINE_CHANNEL_ACCESS_TOKEN=<你的 token>
+   LINE_CHANNEL_SECRET=<你的 secret>
+   LINE_WEBHOOK_PORT=8788
+   LINE_TUNNEL_MODE=quick
+   ```
+   `chmod 600 ~/.claude/channels/line/.env`
+6. 啟動 channel session（**重要：不要在這個 plugin 的 git clone 目錄下跑**，會跟專案層 `.mcp.json` 撞 port）：
+   ```bash
+   cd ~
+   claude --dangerously-load-development-channels plugin:line@line-bot-channel
+   ```
+7. 進去後用 `/mcp` 確認 `plugin:line:line · ✔ connected`
+8. 用 `/line:tunnel url` 取 webhook URL，**用 LINE API 設**（Console UI 偶爾壞掉，下節有命令）。
+9. 加 bot 為好友（Console > Messaging API > QR code），傳第一則訊息：
+   - 第一次：bot 回 6 位配對碼 → 在 session 跑 `/line:access pair 123456`
+   - 之後：訊息直接出現在 Claude session
 
-完成。再傳訊息給 bot，Claude session 就會看到。
+完成。Claude 看到訊息會自然回應；想讓 Claude 主動傳，就在 session 裡叫它用 `line_reply` / `line_push`。
 
 ## Step-by-step Setup
 
@@ -76,103 +96,153 @@ LINE 帳號層級對照：
 
 1. 進入 [LINE Business ID](https://account.line.biz/login) 登入或註冊
 2. 在 [LINE Official Account Manager](https://manager.line.biz/) 建立官方帳號
-3. 帳號頁右上角「**Settings → Messaging API**」→ 啟用 Messaging API（會自動建一個 Provider 與 channel）
+3. 帳號頁右上角 **Settings → Messaging API → Enable** → 會自動建一個 Provider 與 channel
 4. 進入 [LINE Developers Console](https://developers.line.biz/console/) → 點選剛建立的 channel
-5. **Basic settings** 分頁：
-   - 頁面下方「**Channel secret**」→ 複製
-6. **Messaging API** 分頁：
-   - 「**Channel access token (long-lived)**」→ 點 Issue 後複製
+5. **Basic settings** → 滑到底 → 複製 **Channel secret**
+6. **Messaging API** 分頁 → 底部 **Channel access token (long-lived)** → 點 Issue → 複製
 
-### 2. ⚠️ 關閉自動回覆與歡迎訊息
+### 2. ⚠️ 在 OA Manager 把回應設定調對
 
-LINE 預設的 Auto-reply 會搶走訊息，導致你的 webhook 收不到。**這個一定要關**。
+LINE 預設模式是 Chat（人類客服回覆），webhook **不會**被觸發。要改成 Bot 模式。
 
-在 LINE Official Account Manager 點選你的帳號 → **Settings → Response settings**：
+OA Manager → 你的帳號 → **Settings (⚙)** → **Response settings**：
 
-- **「Auto-response messages」→ Disabled**
-- **「Greeting messages」→ Disabled**
-- **「Webhook」→ Enabled**
+| 開關 | 應該設成 | 原因 |
+|---|---|---|
+| **Chat (聊天)** | **Off** | 開著訊息會進 OA Manager 的人類客服頁，不發 webhook |
+| **Webhook** | **On** | 訊息要送到 webhook |
+| **Auto-response messages** | **Off** | 開著 LINE 會搶先回固定訊息 |
+| **Greeting messages** | **Off** | 加好友時不要 LINE 自己回 |
 
-### 3. 安裝並設定 channel plugin
-
-```bash
-# 在 Claude Code 中
-/plugin install line@wcc723/2026-line-bot-channel-mcp
-```
-
-啟動：
+驗證設定生效（`chatMode` 必須是 `bot`）：
 
 ```bash
-claude --channels plugin:line@wcc723/2026-line-bot-channel-mcp
+TOKEN=$(grep '^LINE_CHANNEL_ACCESS_TOKEN=' ~/.claude/channels/line/.env | cut -d= -f2-)
+curl -s https://api.line.me/v2/bot/info -H "Authorization: Bearer $TOKEN"
+# 預期：{"...","chatMode":"bot",...}
 ```
 
-第一次啟動會有 warning「config_missing」。在這個 session 中跑：
+### 3. 安裝 plugin
 
-```text
-/line:configure set-token <你的 channel access token>
-/line:configure set-secret <你的 channel secret>
+```bash
+claude plugin marketplace add wcc723/2026-line-bot-channel-mcp
+claude plugin install line@line-bot-channel
+claude plugin list   # 應看到 line@line-bot-channel ✔ enabled
 ```
 
-token / secret 寫到 `~/.claude/channels/line/.env`（chmod 600）。**寫完要 exit 並重啟 session** 才會載入。
+### 4. 寫 token / secret
 
-### 4. 設定 Cloudflare Tunnel
+直接寫入 `~/.claude/channels/line/.env`（Claude 還沒啟動所以 `/line:configure` 還用不了）：
 
-#### Quick mode（預設，免設定）
+```bash
+mkdir -p ~/.claude/channels/line
+cat > ~/.claude/channels/line/.env <<'EOF'
+LINE_CHANNEL_ACCESS_TOKEN=<貼你的>
+LINE_CHANNEL_SECRET=<貼你的>
+LINE_WEBHOOK_PORT=8788
+LINE_TUNNEL_MODE=quick
+EOF
+chmod 600 ~/.claude/channels/line/.env
+```
 
-啟動後 channel 自動 spawn `cloudflared tunnel --url http://localhost:8788`，從 stderr 抓到 trycloudflare.com URL 並通知你。
+未來想改用 `/line:configure set-token <TOKEN>`、`/line:configure set-secret <SECRET>` 也行，記得改完 **退出 + 重啟 session** 才生效。
+
+### 5. 設定 Cloudflare Tunnel
+
+#### 模式 A：Quick mode（預設、零設定）
+
+啟動 channel 後自動 spawn `cloudflared tunnel --url http://localhost:8788`，從 stderr 抓 `*.trycloudflare.com` URL。
 
 ```text
 /line:tunnel url
 # → https://random-name.trycloudflare.com/webhook
 ```
 
-把這 URL 貼到 LINE Developers Console > Messaging API > **Webhook URL** 欄位，按 **Verify**，拿到綠勾即成功。
+⚠️ Quick tunnel **每次重啟 channel URL 會變**，要重新貼到 LINE Console 一次。
 
-⚠️ Quick tunnel **每次重啟 channel URL 會變動**，要重新貼一次。
+#### 模式 B：Named mode（建議生產環境）
 
-#### Named mode（建議生產環境）
-
-URL 固定，不用重貼：
+URL 固定不變：
 
 ```bash
 cloudflared tunnel login
 cloudflared tunnel create line-channel
 cloudflared tunnel route dns line-channel line-bot.example.com
-# 編輯 ~/.cloudflared/config.yml 設 ingress 指向 localhost:8788
+# 編輯 ~/.cloudflared/config.yml：
+#   tunnel: <tunnel-id>
+#   credentials-file: ~/.cloudflared/<tunnel-id>.json
+#   ingress:
+#     - hostname: line-bot.example.com
+#       service: http://localhost:8788
+#     - service: http_status:404
 cloudflared tunnel run line-channel
 ```
 
-然後切到 named 模式：
+把 `.env` 改成：
 
-```text
-/line:configure tunnel-mode named
-/line:configure public-url https://line-bot.example.com
+```
+LINE_TUNNEL_MODE=named
+LINE_PUBLIC_URL=https://line-bot.example.com
 ```
 
-#### External mode
+#### 模式 C：External mode
 
-你已經用 ngrok / Tailscale Funnel / 其他方式暴露 8788，channel 就只 listen port：
+你已經用 ngrok / Tailscale Funnel / 其他方式暴露 8788：
 
-```text
-/line:configure tunnel-mode external
-/line:configure public-url https://your.tunnel.example.com
+```
+LINE_TUNNEL_MODE=external
+LINE_PUBLIC_URL=https://your.tunnel.example.com
 ```
 
-### 5. 配對使用者（白名單）
+### 6. 啟動 channel session
 
-1. 加 bot 為好友（掃 LINE Developers Console > Messaging API 分頁的 QR code）
-2. 在 LINE 傳第一則訊息 → bot 自動回覆 6 位數字配對碼
-3. 在 Claude session 跑：
+⚠️ **不要在 plugin 的 git clone 目錄下跑** `claude`：Claude Code 會把 `./.mcp.json` 當「專案層 MCP」也載一份，跟 plugin 自己的 MCP 搶 port 8788 → 兩個都 fail。
+
+```bash
+cd ~   # 任何不在 plugin 源碼目錄的位置都行
+claude --dangerously-load-development-channels plugin:line@line-bot-channel
+```
+
+進去後 `/mcp` 應顯示 `plugin:line:line · ✔ connected`。
+
+### 7. 設定 LINE webhook URL
+
+#### 方式 A：用 API（推薦——Console UI 偶爾 400）
+
+```bash
+TOKEN=$(grep '^LINE_CHANNEL_ACCESS_TOKEN=' ~/.claude/channels/line/.env | cut -d= -f2-)
+WEBHOOK="https://line-bot.example.com/webhook"   # ← 換成你的 tunnel URL
+
+# 設 webhook URL
+curl -X PUT https://api.line.me/v2/bot/channel/webhook/endpoint \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"endpoint\":\"$WEBHOOK\"}"
+
+# 觸發 verify
+curl -X POST https://api.line.me/v2/bot/channel/webhook/test \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{}'
+# 預期：{"success":true,"statusCode":200,"reason":"OK","detail":"200"}
+```
+
+#### 方式 B：在 Console UI 設
+
+LINE Developers Console > 你的 channel > **Messaging API** > **Webhook URL** 欄位 Edit → 貼上 `<tunnel-url>/webhook`（**末尾不要斜線**）→ Update → 按 **Verify** 拿綠勾。
+
+### 8. 配對使用者（白名單）
+
+預設 policy 是 `pair`：陌生人傳第一則訊息會收到 6 位配對碼。
+
+1. 加 bot 為好友（Console > Messaging API 分頁的 QR code）
+2. LINE 傳第一則訊息 → bot 自動回 6 位數字配對碼
+3. 在 Claude session：
    ```text
    /line:access pair 123456
    ```
-4. 完成後再傳訊息 → Claude session 收到事件
+4. 之後再傳訊息 → 直接進 Claude session、Claude 自然回應
 
-如果你想跳過配對直接加白名單：
-
-```text
-/line:access allow Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
+跳過配對：`/line:access allow Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
 ## Environment Variables
 
@@ -184,7 +254,8 @@ cloudflared tunnel run line-channel
 | `LINE_TUNNEL_MODE` |  | `quick` | `quick` / `named` / `external` |
 | `LINE_PUBLIC_URL` |  | — | named/external 模式的固定公開 URL |
 | `LINE_API_BASE` |  | `https://api.line.me` | 測試時可指向 mock server |
-| `LINE_STATE_DIR` |  | `~/.claude/channels/line` | 設定 / allowlist 檔的位置 |
+| `LINE_STATE_DIR` |  | `~/.claude/channels/line` | 設定 / allowlist / log 檔的位置 |
+| `LINE_LOG_FILE` |  | `<state>/server.log` | 設 `off` 完全關閉檔案 log |
 | `LINE_LOG_LEVEL` |  | `info` | `debug` / `info` / `warn` / `error` |
 
 可寫在 `~/.claude/channels/line/.env`，也可走 shell env 覆寫。
@@ -209,9 +280,32 @@ cloudflared tunnel run line-channel
 
 完整 access policy 行為見 [ACCESS.md](./ACCESS.md)。
 
+## 開發者：改 plugin code 後重新驗證
+
+每次改完 code、commit + push 之後，**Claude Code 不會自動拉新版**（cache key 是 plugin 版本，沒 bump 不重抓）。要強制重抓：
+
+```bash
+claude plugin marketplace update line-bot-channel
+claude plugin uninstall line@line-bot-channel
+claude plugin install line@line-bot-channel
+# 清掉前一個 session 留下的孤兒 bun（如果有）
+lsof -nP -iTCP:8788 -sTCP:LISTEN -t | xargs -I{} kill {} 2>/dev/null
+# 在「不在 plugin 源碼目錄」的地方重新啟動
+cd ~
+claude --dangerously-load-development-channels plugin:line@line-bot-channel
+```
+
+可以包成自己的 shell function 或 `.command` 檔讓流程自動化。
+
+實時觀察 webhook 收到什麼：
+
+```bash
+tail -F ~/.claude/channels/line/server.log
+```
+
 ## E2E 測試
 
-`agents/e2e-tester.md` 提供一個自動化測試 subagent，模擬 LINE 使用者驅動 channel 走完所有情境。
+`agents/e2e-tester.md` 提供自動化測試 subagent，模擬 LINE 使用者驅動 channel 走完所有情境。
 
 ```bash
 # 終端 1：起 mock LINE API
@@ -226,8 +320,9 @@ LINE_PUBLIC_URL=http://localhost:8788 \
 LINE_STATE_DIR=/tmp/line-e2e-state \
 bun start
 
-# 終端 3：開 Claude Code session 載入 channel，呼叫 e2e-tester agent
-claude --channels plugin:line@wcc723/2026-line-bot-channel-mcp --plugin-dir .
+# 終端 3：開 Claude session 載入 channel，呼叫 e2e-tester agent
+cd ~
+claude --dangerously-load-development-channels plugin:line@line-bot-channel
 > 請呼叫 e2e-tester subagent 跑完所有情境
 ```
 
@@ -242,16 +337,52 @@ bun test tests/integration   # 整合
 
 ## Troubleshooting
 
-### Webhook Verify 按下去顯示「The webhook returned an HTTP status code other than 200.」
+### 訊息不會進 Claude session（最常見）
 
-- 簽章驗證失敗：確認 channel secret 正確、`/line:configure set-secret` 後有重啟 session
-- Tunnel 沒指到 8788：`/line:tunnel status` 確認 url 與 port
+依下列順序排查：
 
-### 收不到訊息
+1. **`chatMode` 不是 `bot`**（OA Manager 的 `Chat` 沒關）：
+   ```bash
+   TOKEN=$(grep '^LINE_CHANNEL_ACCESS_TOKEN=' ~/.claude/channels/line/.env | cut -d= -f2-)
+   curl -s https://api.line.me/v2/bot/info -H "Authorization: Bearer $TOKEN"
+   ```
+   要看到 `"chatMode":"bot"`。如果是 `"chat"`，回 OA Manager → Response settings → Chat 切 Off。
+2. **server log 沒看到 `event received`**：webhook 沒進到 channel。檢查 LINE Console webhook URL、tunnel URL 是否一致。
+3. **server log 看到 `event received` 但 session 沒反應**：通常是 plugin 沒裝（只用 `--plugin-dir`）或忘了 `--dangerously-load-development-channels`。確認 `claude plugin list` 有 `line@line-bot-channel ✔ enabled`、`/mcp` 顯示 `connected`。
 
-- 「自動回覆訊息」未關：再去 Official Account Manager 確認 Response settings
-- bot 沒被加好友：用 LINE Developers Console > Messaging API 的 QR code 加好友
-- DM policy 是 `disabled`：跑 `/line:access policy pair`
+### `/mcp` 顯示 `line · ✘ failed` 或 `Failed to reconnect to line`
+
+九成是 port 8788 撞了。可能原因：
+
+- 你在 plugin 的 git clone 目錄下起 `claude` → 專案層 `.mcp.json` 跟 plugin MCP 搶 port。**`cd ~` 再跑**。
+- 上一個 session 的孤兒 bun 沒清掉：
+  ```bash
+  lsof -nP -iTCP:8788 -sTCP:LISTEN -t | xargs -I{} kill {} 2>/dev/null
+  ```
+  之後重啟 Claude session。
+
+### Webhook Verify 顯示 `400 Bad request` 或 `{message:null,...}`
+
+這是 LINE Developers Console UI 的 bug，不是你的問題。**用 API 改 webhook URL** 繞過：
+
+```bash
+TOKEN=$(grep '^LINE_CHANNEL_ACCESS_TOKEN=' ~/.claude/channels/line/.env | cut -d= -f2-)
+curl -X PUT https://api.line.me/v2/bot/channel/webhook/endpoint \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"endpoint":"https://your-url/webhook"}'
+curl -X POST https://api.line.me/v2/bot/channel/webhook/test \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}'
+```
+
+`success: true` 即驗證通過。
+
+### Webhook Verify 通過但實際傳訊息 channel 沒收到
+
+通常是 `chatMode = chat`（見上）或「Auto-response messages: Enabled」搶走訊息。
+
+### 收到「感謝您的訊息！很抱歉，本帳號無法個別回覆用戶的訊息」
+
+這是 LINE OA 的預設自動回應模板，代表 chatMode 是 `chat` 或 `Auto-response messages` 開著。回 OA Manager 全關掉。
 
 ### `cloudflared` 找不到 URL
 
@@ -276,7 +407,7 @@ session 處於 idle 才會處理 channel 事件；如果 Claude 正在做其他�
 ## FAQ
 
 **Q：channel 是 24/7 service 嗎？**
-A：不是。Channel 只在 `claude --channels ...` 跑著的時候才接收訊息。Claude session 結束就停了。
+A：不是。Channel 只在 Claude session 跑著的時候才接收訊息。session 結束就停了。
 
 **Q：reply token 為什麼有 30 秒限制？**
 A：這是 LINE API 的設計。超時自動走 push（會吃月配額）。
@@ -286,6 +417,9 @@ A：v1 不支援。一個 channel session 對應一個 channel access token。
 
 **Q：為什麼用 Bun 不用 Node？**
 A：對齊官方 telegram channel 範本（[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram)）；Bun 原生支援 TS、`bun run` 啟動會自動裝依賴。
+
+**Q：為什麼要 `--dangerously-load-development-channels` 不能直接 `--channels`？**
+A：研究預覽期間 `--channels` 只認 Anthropic 維護的 allowlist。自製 channel 必須走 dev flag。
 
 ## License
 
