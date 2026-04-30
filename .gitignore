@@ -10,3 +10,6 @@ coverage/
 dist/
 
 .claude/*.local.*
+
+# 本地開發腳本（refresh-plugin.sh 等）
+scripts/
