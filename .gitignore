@@ -8,3 +8,5 @@ docs/screenshots/
 .vscode/
 coverage/
 dist/
+
+.claude/*.local.*

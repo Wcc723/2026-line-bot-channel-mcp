@@ -24,11 +24,13 @@ export class ShutdownRegistry {
   }
 
   install(): void {
-    const handler = (signal: string) => {
-      log.info(`shutdown: received ${signal}`);
+    const handler = (reason: string) => {
+      log.info(`shutdown: received ${reason}`);
       void this.runAll().then(() => process.exit(0));
     };
     process.on("SIGINT", () => handler("SIGINT"));
     process.on("SIGTERM", () => handler("SIGTERM"));
+    process.on("SIGHUP", () => handler("SIGHUP"));
+    process.on("disconnect", () => handler("ipc_disconnect"));
   }
 }

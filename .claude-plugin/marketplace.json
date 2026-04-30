@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "line-bot-channel",
+  "description": "LINE Messaging API channel for Claude Code (single-plugin marketplace)",
+  "owner": {
+    "name": "wcc723"
+  },
+  "plugins": [
+    {
+      "name": "line",
+      "description": "LINE Messaging API channel — 雙向訊息互動，含白名單與 Cloudflare Tunnel 整合",
+      "category": "productivity",
+      "source": "."
+    }
+  ]
+}

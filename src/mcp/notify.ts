@@ -4,30 +4,36 @@ import type { ChannelNotifier } from "@/webhook/dispatcher.ts";
 import { log } from "@/util/log.ts";
 
 /**
- * 把 channel 事件轉成 MCP notification 推給 Claude session。
- * 用 LoggingMessageNotification（method: "notifications/message"）— Claude Code 會把這類 payload 顯示在 session。
+ * 把 channel 事件轉成 Claude Code channel notification。
+ * Claude Code 認得的 method：
+ *   notifications/claude/channel                     - 一般訊息事件（會被注入到 session）
+ *   notifications/claude/channel/permission_request  - 權限詢問（v1 不用）
+ *   notifications/claude/channel/permission          - 權限回應（v1 不用）
+ *
+ * 系統等級訊息（tunnel URL、pair 通知）走 sendLoggingMessage，
+ * 不會自動注入 session 但會顯示在 stderr / debug。
  */
 export function createMcpNotifier(server: Server): ChannelNotifier {
   return {
     async notifyMessage(event: NormalizedEvent) {
-      const payload = {
-        channel: "line",
-        kind: "message",
-        userId: event.userId,
-        text: event.text,
-        messageType: event.messageType,
-        messageId: event.messageId,
-        webhookEventId: event.webhookEventId,
-        timestamp: event.timestamp,
+      const params = {
+        content: event.text ?? `[${event.messageType ?? "non-text"}]`,
+        meta: {
+          channel: "line",
+          user_id: event.userId,
+          message_id: event.messageId,
+          message_type: event.messageType,
+          webhook_event_id: event.webhookEventId,
+          ts: new Date(event.timestamp).toISOString(),
+        },
       };
       try {
-        await server.sendLoggingMessage({
-          level: "info",
-          logger: "line-channel",
-          data: payload,
+        await server.notification({
+          method: "notifications/claude/channel",
+          params,
         });
       } catch (err) {
-        log.warn("notifier: sendLoggingMessage failed (session may be detached)", { err: String(err) });
+        log.warn("notifier: channel notification failed (session may be detached)", { err: String(err) });
       }
     },
     async notifySystem(level: "info" | "warning", message: string, data?: unknown) {
