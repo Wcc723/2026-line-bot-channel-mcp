@@ -16,15 +16,20 @@ import { log } from "@/util/log.ts";
 export function createMcpNotifier(server: Server): ChannelNotifier {
   return {
     async notifyMessage(event: NormalizedEvent) {
+      const userId = event.userId ?? "unknown";
+      // LINE 1-on-1：chat_id 即 userId（同一個對話）
       const params = {
         content: event.text ?? `[${event.messageType ?? "non-text"}]`,
         meta: {
+          chat_id: userId,
+          user: userId,
+          user_id: userId,
+          ...(event.messageId ? { message_id: event.messageId } : {}),
+          ts: new Date(event.timestamp).toISOString(),
+          // 自家額外資訊
           channel: "line",
-          user_id: event.userId,
-          message_id: event.messageId,
           message_type: event.messageType,
           webhook_event_id: event.webhookEventId,
-          ts: new Date(event.timestamp).toISOString(),
         },
       };
       try {

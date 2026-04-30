@@ -35,6 +35,12 @@ export async function startMcpServer(opts: StartOpts): Promise<RunningMcpServer>
       capabilities: {
         tools: {},
         logging: {},
+        // 對齊官方 telegram channel：宣告 experimental claude/channel
+        // Claude Code 看到這個才會把 notifications/claude/channel 注入 session
+        experimental: {
+          "claude/channel": {},
+          "claude/channel/permission": {},
+        },
       },
     },
   );
