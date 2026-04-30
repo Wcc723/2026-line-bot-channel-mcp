@@ -244,6 +244,74 @@ LINE Developers Console > 你的 channel > **Messaging API** > **Webhook URL** �
 
 跳過配對：`/line:access allow Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
+## 在另一台機器上安裝（migrate / 多機）
+
+Repo 根有 `install.sh` 自動化所有可自動化的步驟。
+
+### 一鍵腳本
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wcc723/2026-line-bot-channel-mcp/main/install.sh | bash
+```
+
+會做：
+
+1. 檢查 `brew`、`claude` 是否已裝
+2. 裝 `bun`、`cloudflared`（如果還沒）
+3. `claude plugin marketplace add wcc723/2026-line-bot-channel-mcp` + `install line@line-bot-channel`
+4. 偵測你 `~/.claude/channels/line/.env` 是否已就位（有就驗欄位長度，沒有就提示要怎麼搬）
+5. 偵測 `LINE_TUNNEL_MODE`，若為 `named` 額外提示要複製 `~/.cloudflared/`
+6. 印出「下一步啟動命令」
+
+腳本不會碰 secrets——`.env` 跟 cloudflared credentials 你必須手動從舊機器**安全搬過來**（scp / AirDrop / 1Password / 加密 USB），不要走 email、git、Slack 等。
+
+### 必須手動搬的兩組檔案
+
+| 檔案 | 何時需要 | 怎麼搬 |
+|---|---|---|
+| `~/.claude/channels/line/.env` | 永遠需要 | `scp old:~/.claude/channels/line/.env ~/.claude/channels/line/.env`<br>之後 `chmod 600` |
+| `~/.cloudflared/config.yml` + `~/.cloudflared/<tunnel-id>.json` | 只有 `LINE_TUNNEL_MODE=named` 需要 | `scp old:~/.cloudflared/* ~/.cloudflared/`<br>記得改 `config.yml` 裡 `credentials-file` 路徑 |
+
+LINE Console 的 webhook URL **不需要改**（DNS CNAME 不變）。
+
+### ⚠️ 不要兩台同時跑 channel server
+
+`access.json`（白名單）在每台機器各自一份。兩台同時跑會：
+- LINE webhook 由 cloudflared 隨機分流給任一台
+- 配對狀態不同步
+- 訊息可能漏掉某些 session
+
+退役舊機器：
+
+```bash
+# 在舊機器
+# 退出 Claude session（/quit）
+pkill -f "cloudflared tunnel run"
+```
+
+要兩台輪流用：每次只在一台啟動 Claude session，DNS / tunnel 都不用動。
+
+### 完整純手動步驟（不用腳本）
+
+如果不想跑腳本：
+
+```bash
+# 1. 工具
+brew install cloudflared
+npm install -g bun
+
+# 2. plugin
+claude plugin marketplace add wcc723/2026-line-bot-channel-mcp
+claude plugin install line@line-bot-channel
+
+# 3. 從舊機搬 ~/.claude/channels/line/.env 與（named tunnel）~/.cloudflared/*
+
+# 4. 起 tunnel + channel
+cloudflared tunnel run <your-tunnel-name>     # 另一個終端，named mode 才需要
+cd ~                                          # 不要在 plugin 源碼目錄
+claude --dangerously-load-development-channels plugin:line@line-bot-channel
+```
+
 ## Environment Variables
 
 | 變數 | 必填 | 預設 | 說明 |
