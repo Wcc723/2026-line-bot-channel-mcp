@@ -56,6 +56,9 @@ async function main() {
       dispatcher = new Dispatcher({ access, client, replyStore, notifier: mcp.notifier });
       log.info("config: reloaded after _configure_set");
     },
+    onTransportClose: () => {
+      void shutdown.runAll().then(() => process.exit(0));
+    },
   });
   shutdown.add("mcp", () => mcp.close());
 
