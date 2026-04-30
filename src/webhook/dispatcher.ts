@@ -75,6 +75,13 @@ export class Dispatcher {
   }
 
   private async handleOne(ev: NormalizedEvent): Promise<void> {
+    log.info("event received", {
+      type: ev.type,
+      source: ev.sourceKind,
+      userId: ev.userId,
+      text: ev.text,
+      eventId: ev.webhookEventId,
+    });
     if (ev.sourceKind !== "user") {
       log.debug("dispatcher: non-user source dropped", { kind: ev.sourceKind, type: ev.type });
       return;
@@ -99,6 +106,7 @@ export class Dispatcher {
         if (ev.replyToken && ev.userId) {
           this.replyStore.set(ev.userId, ev.replyToken);
         }
+        log.info("dispatch: allow → notifyMessage", { userId: ev.userId });
         await this.notifier.notifyMessage(ev);
         return;
       }
