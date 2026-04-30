@@ -75,12 +75,19 @@ export class Dispatcher {
   }
 
   private async handleOne(ev: NormalizedEvent): Promise<void> {
+    // log.info 會寫到 file log（含磁碟）；訊息原文視為 PII，預設只記長度
+    // 真要 debug 內容用 LINE_LOG_LEVEL=debug，那條 log 走 stderr 也進 file log
     log.info("event received", {
       type: ev.type,
       source: ev.sourceKind,
       userId: ev.userId,
-      text: ev.text,
+      textLen: ev.text?.length,
+      messageType: ev.messageType,
       eventId: ev.webhookEventId,
+    });
+    log.debug("event received (full)", {
+      text: ev.text,
+      messageId: ev.messageId,
     });
     if (ev.sourceKind !== "user") {
       log.debug("dispatcher: non-user source dropped", { kind: ev.sourceKind, type: ev.type });

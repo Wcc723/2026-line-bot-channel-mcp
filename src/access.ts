@@ -58,9 +58,9 @@ export class AccessStore {
   }
 
   private flush(): void {
-    mkdirSync(dirname(this.filePath), { recursive: true });
+    mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
     const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.state, null, 2), "utf8");
+    writeFileSync(tmp, JSON.stringify(this.state, null, 2), { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, this.filePath);
   }
 

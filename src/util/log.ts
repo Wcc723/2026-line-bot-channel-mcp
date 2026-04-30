@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, openSync, closeSync, chmodSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -17,9 +17,21 @@ const fileTarget = (() => {
   return join(stateDir, "server.log");
 })();
 
+// log 內可能含使用者訊息片段（即使 INFO 已遮罩，DEBUG 仍會記原文）；
+// 強制 0600 / 0700 權限，避免他人讀到。
 if (fileTarget) {
   try {
-    mkdirSync(dirname(fileTarget), { recursive: true });
+    mkdirSync(dirname(fileTarget), { recursive: true, mode: 0o700 });
+    if (!existsSync(fileTarget)) {
+      const fd = openSync(fileTarget, "a", 0o600);
+      closeSync(fd);
+    } else {
+      try {
+        chmodSync(fileTarget, 0o600);
+      } catch {
+        // 已存在但無法 chmod 不致命
+      }
+    }
   } catch {
     // 失敗不影響運作，stderr 永遠在
   }

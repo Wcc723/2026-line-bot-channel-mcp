@@ -323,6 +323,11 @@ function callConfigureShow(deps: ToolDeps) {
   };
 }
 
+function isSafeEnvValue(v: string): boolean {
+  // 阻擋 newline 注入（會在 .env 多生一行假變數）與容易出錯的字元
+  return !/[\r\n]/.test(v);
+}
+
 function callConfigureSet(
   deps: ToolDeps,
   args: {
@@ -333,8 +338,13 @@ function callConfigureSet(
     tunnel_mode?: string;
   },
 ) {
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === "string" && !isSafeEnvValue(v)) {
+      return asResult(`參數 ${k} 含換行或控制字元，拒絕寫入（避免 .env 注入）`);
+    }
+  }
   const path = envFilePath();
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const existing: Record<string, string> = {};
   if (existsSync(path)) {
     for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
