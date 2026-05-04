@@ -7,8 +7,20 @@ LINE channel 的白名單機制。所有狀態存於 `~/.claude/channels/line/ac
 ```json
 {
   "dmPolicy": "pair",
-  "allowFrom": [
-    "Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "users": [
+    {
+      "userId": "Ucb2f92114934e9357e967c8e3420fabe",
+      "nickname": "Casper",
+      "role": "owner",
+      "addedAt": 1714000000000
+    },
+    {
+      "userId": "Uxxx...",
+      "nickname": "A君",
+      "title": "助教",
+      "role": "member",
+      "addedAt": 1714500000000
+    }
   ],
   "pendingPairs": {
     "123456": {
@@ -20,7 +32,17 @@ LINE channel 的白名單機制。所有狀態存於 `~/.claude/channels/line/ac
 }
 ```
 
-每次有訊息進來，channel 重新讀此檔案，所以你可以手改這個檔再立即生效（需要原子寫入避免半寫狀態）。
+每筆 `users` entry 必須有 `userId` 與 `role`；`nickname` / `title` 都是 optional。
+
+| 欄位 | 必填 | 範例 | 用途 |
+|---|---|---|---|
+| `userId` | ✓ | `U` + 32 hex | LINE 平台 ID，認證唯一識別 |
+| `role` | ✓ | `"owner"` / `"member"` | 信任度與行為標籤 |
+| `nickname` | | `"Casper"`、`"A君"` | Claude 稱呼用 |
+| `title` | | `"助教"`、`"老師"` | 與使用者的關係描述 |
+| `addedAt` | ✓ | unix ms | 加入時間，未來 audit / 排序用 |
+
+每次有訊息進來 channel 重新讀此檔案，所以你可以手改這個檔再立即生效（需要原子寫入避免半寫狀態，建議透過 `/line:access` 指令）。
 
 ## 三種 DM Policy
 
@@ -87,9 +109,10 @@ LINE 使用者              LINE Platform           Channel               Claude
 
 | 指令 | 動作 |
 |---|---|
-| `/line:access list` | 顯示 allowFrom、pendingPairs、dmPolicy |
-| `/line:access pair <code>` | 兌換 6 位配對碼 |
-| `/line:access allow <userId>` | 直接加入白名單 |
+| `/line:access list` | 顯示 users（含身份）、pendingPairs、dmPolicy |
+| `/line:access pair <code> [nickname=..] [title=..] [role=..]` | 兌換 6 位配對碼，可同時設身份 |
+| `/line:access allow <userId> [nickname=..] [title=..] [role=..]` | 直接加入白名單 |
+| `/line:access set <userId> [nickname=..] [title=..] [role=..]` | 更新已存在 user 的身份（傳空字串清空 nickname/title） |
 | `/line:access remove <userId>` | 移除 |
 | `/line:access policy pair\|allowlist\|disabled` | 切 policy |
 
@@ -102,6 +125,8 @@ LINE 使用者              LINE Platform           Channel               Claude
 | Webhook 簽章被偽造 | HMAC-SHA256（channel secret），用 `timingSafeEqual` 比對 |
 | Token 外洩 | `.env` chmod 600；rotate 流程見 README Security 段 |
 | webhook retry 重複處理 | dispatcher 用 webhookEventId LRU 去重（最近 1024 筆） |
+| **`nickname` / `title` 被當作 auth** | **不要**：這兩欄是純 advisory 字串，給 Claude 顯示用。**真正的身份識別永遠是 `userId`**（由 LINE 平台簽過名）。任何人不能透過操控 nickname 假冒別人——他們的 userId 不會變 |
+| **role=member 被當作 hard sandbox** | role 是 advisory，Claude 自行依角色調整；channel 層不阻擋 MCP tool 呼叫。要硬擋需要在 Claude session 的 system prompt / CLAUDE.md 加規則 |
 
 ## Migration
 

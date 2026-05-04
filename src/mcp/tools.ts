@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AccessStore, DmPolicy } from "@/access.ts";
+import { isValidRole, type AccessStore, type DmPolicy, type Role, type UserMetaOpts } from "@/access.ts";
 import type { LineClient, Message } from "@/line/client.ts";
 import { isReplyTokenError } from "@/line/client.ts";
 import type { ReplyTokenStore } from "@/line/replyStore.ts";
@@ -28,6 +28,29 @@ interface PushArgs { user_id: string; text: string }
 interface ReactArgs { user_id: string; message_id: string; emoji: string }
 interface MarkReadArgs { user_id: string }
 interface ProfileArgs { user_id: string }
+interface AccessAllowArgs { user_id?: string; nickname?: string; title?: string; role?: string }
+interface AccessPairArgs { code?: string; nickname?: string; title?: string; role?: string }
+
+/** 把 args 轉成 UserMetaOpts；遇到 invalid role 回傳錯誤訊息字串 */
+function parseUserMetaOpts(args: AccessAllowArgs | AccessPairArgs): UserMetaOpts | string {
+  const out: UserMetaOpts = {};
+  if (args.nickname !== undefined) out.nickname = String(args.nickname);
+  if (args.title !== undefined) out.title = String(args.title);
+  if (args.role !== undefined) {
+    const r = String(args.role);
+    if (!isValidRole(r)) return `role 必須是 owner / member，收到：${r}`;
+    out.role = r as Role;
+  }
+  return out;
+}
+
+function formatEntry(e: { userId: string; nickname?: string; title?: string; role: string }): string {
+  const parts = [e.userId];
+  if (e.nickname) parts.push(`nickname=${e.nickname}`);
+  if (e.title) parts.push(`title=${e.title}`);
+  parts.push(`role=${e.role}`);
+  return parts.join(" ");
+}
 
 const PUBLIC_TOOLS: Tool[] = [
   {
@@ -88,24 +111,45 @@ const PUBLIC_TOOLS: Tool[] = [
   },
 ];
 
+const ACCESS_USER_META_PROPS = {
+  nickname: { type: "string", description: "暱稱：Claude 用來稱呼此使用者，例如 'Casper'、'A君'" },
+  title: { type: "string", description: "稱謂：與使用者的關係描述，例如 '助教'、'老師'、'媽媽'" },
+  role: { type: "string", enum: ["owner", "member"], description: "owner=主要使用者（高信任）；member=邀請來的人（預設）" },
+} as const;
+
 const INTERNAL_TOOLS: Tool[] = [
   {
     name: "_access_list",
-    description: "List allowlist, pending pairs, and current dm policy. Used by /line:access skill.",
+    description: "List allowlist users (with nickname/title/role), pending pairs, and current dm policy. Used by /line:access skill.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "_access_pair",
-    description: "Redeem a 6-digit pair code, adding the originating LINE userId to the allowlist.",
+    description: "Redeem a 6-digit pair code, adding the originating LINE userId to the allowlist. Optionally tag the user with nickname/title/role at the same time.",
     inputSchema: {
       type: "object",
-      properties: { code: { type: "string" } },
+      properties: {
+        code: { type: "string" },
+        ...ACCESS_USER_META_PROPS,
+      },
       required: ["code"],
     },
   },
   {
     name: "_access_allow",
-    description: "Manually add a LINE userId to the allowlist (skip pairing).",
+    description: "Manually add a LINE userId to the allowlist. Optionally include nickname/title/role.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string" },
+        ...ACCESS_USER_META_PROPS,
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "_access_remove",
+    description: "Remove a userId from the allowlist.",
     inputSchema: {
       type: "object",
       properties: { user_id: { type: "string" } },
@@ -113,8 +157,20 @@ const INTERNAL_TOOLS: Tool[] = [
     },
   },
   {
-    name: "_access_remove",
-    description: "Remove a userId from the allowlist.",
+    name: "_access_set",
+    description: "Update an already-allowlisted user's nickname / title / role. Pass empty string to clear nickname or title.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string" },
+        ...ACCESS_USER_META_PROPS,
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "_access_get_user",
+    description: "Get a single user's full entry (userId + nickname/title/role/addedAt) for Claude to reference when responding.",
     inputSchema: {
       type: "object",
       properties: { user_id: { type: "string" } },
@@ -196,16 +252,38 @@ export function registerTools(server: Server, deps: ToolDeps): void {
         case "_access_list":
           return asJson(deps.access.snapshot());
         case "_access_pair":
-          return callAccessPair(deps, args as { code?: string });
+          return callAccessPair(deps, args as AccessPairArgs);
         case "_access_allow": {
-          const userId = String((args as { user_id?: string }).user_id ?? "");
-          deps.access.allow(userId);
-          return asResult(`✅ ${userId} 已加入白名單。`);
+          const a = args as AccessAllowArgs;
+          const userId = String(a.user_id ?? "");
+          const opts = parseUserMetaOpts(a);
+          if (typeof opts === "string") return asResult(opts);
+          const entry = deps.access.allow(userId, opts);
+          return asResult(`✅ 已加入白名單：${formatEntry(entry)}`);
         }
         case "_access_remove": {
           const userId = String((args as { user_id?: string }).user_id ?? "");
           const ok = deps.access.remove(userId);
           return asResult(ok ? `🗑 ${userId} 已自白名單移除。` : `(找不到此 userId)`);
+        }
+        case "_access_set": {
+          const a = args as AccessAllowArgs;
+          const userId = String(a.user_id ?? "");
+          const opts = parseUserMetaOpts(a);
+          if (typeof opts === "string") return asResult(opts);
+          if (Object.keys(opts).length === 0) return asResult("沒有要更新的欄位（nickname / title / role 至少一個）");
+          try {
+            const entry = deps.access.setMeta(userId, opts);
+            return asResult(`✅ 已更新：${formatEntry(entry)}`);
+          } catch (err) {
+            return asResult(`❌ ${String(err)}`);
+          }
+        }
+        case "_access_get_user": {
+          const userId = String((args as { user_id?: string }).user_id ?? "");
+          const entry = deps.access.getUser(userId);
+          if (!entry) return asResult(`(${userId} 不在白名單)`);
+          return asJson(entry);
         }
         case "_access_set_policy": {
           const p = String((args as { policy?: string }).policy ?? "pair") as DmPolicy;
@@ -292,11 +370,13 @@ async function callGetProfile(deps: ToolDeps, args: ProfileArgs) {
   return asJson(profile);
 }
 
-function callAccessPair(deps: ToolDeps, args: { code?: string }) {
+function callAccessPair(deps: ToolDeps, args: AccessPairArgs) {
   const code = String(args.code ?? "").trim();
   if (!/^\d{6}$/.test(code)) return asResult("code 必須是 6 位數字");
-  const result = deps.access.redeemPairCode(code);
-  if (result.ok) return asResult(`✅ 配對成功，${result.userId} 已加入白名單。`);
+  const opts = parseUserMetaOpts(args);
+  if (typeof opts === "string") return asResult(opts);
+  const result = deps.access.redeemPairCode(code, opts);
+  if (result.ok) return asResult(`✅ 配對成功：${formatEntry(result.entry)}`);
   if (result.reason === "code_expired") return asResult("❌ code 已過期（10 分鐘 TTL）。請使用者再傳一次訊息產生新 code。");
   return asResult("❌ 找不到此 code。請確認輸入正確且未被兌換。");
 }

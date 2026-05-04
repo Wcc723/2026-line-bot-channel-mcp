@@ -1,4 +1,4 @@
-import type { AccessStore } from "@/access.ts";
+import type { AccessStore, UserEntry } from "@/access.ts";
 import type { LineClient } from "@/line/client.ts";
 import type { ReplyTokenStore } from "@/line/replyStore.ts";
 import { normalize, type LineRawEvent, type NormalizedEvent } from "@/line/events.ts";
@@ -9,7 +9,7 @@ import { log } from "@/util/log.ts";
  * 在測試或未連線時可注入無動作版本。
  */
 export interface ChannelNotifier {
-  notifyMessage(event: NormalizedEvent): Promise<void> | void;
+  notifyMessage(event: NormalizedEvent, entry?: UserEntry): Promise<void> | void;
   notifySystem(level: "info" | "warning", message: string, data?: unknown): Promise<void> | void;
 }
 
@@ -113,8 +113,14 @@ export class Dispatcher {
         if (ev.replyToken && ev.userId) {
           this.replyStore.set(ev.userId, ev.replyToken);
         }
-        log.info("dispatch: allow → notifyMessage", { userId: ev.userId });
-        await this.notifier.notifyMessage(ev);
+        const entry = ev.userId ? this.access.getUser(ev.userId) : undefined;
+        log.info("dispatch: allow → notifyMessage", {
+          userId: ev.userId,
+          nickname: entry?.nickname,
+          title: entry?.title,
+          role: entry?.role,
+        });
+        await this.notifier.notifyMessage(ev, entry);
         return;
       }
       case "reject": {

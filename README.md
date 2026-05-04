@@ -5,6 +5,7 @@
 - Claude 可主動透過 LINE 發訊息給你
 - 你在 LINE 傳的訊息會被推進 Claude session，由 Claude 看到並回覆
 - 內建白名單（pair / allowlist / disabled 三種 policy）
+- **使用者身份**：每個白名單 user 可標 **暱稱 / 稱謂 / 角色**，Claude 會用你給的名字稱呼、依角色調整信任度
 - 整合 Cloudflare Tunnel 三種模式（quick / named / external）
 
 ## 架構
@@ -238,11 +239,41 @@ LINE Developers Console > 你的 channel > **Messaging API** > **Webhook URL** �
 2. LINE 傳第一則訊息 → bot 自動回 6 位數字配對碼
 3. 在 Claude session：
    ```text
-   /line:access pair 123456
+   /line:access pair 123456 nickname=Casper role=owner
    ```
-4. 之後再傳訊息 → 直接進 Claude session、Claude 自然回應
+4. 之後再傳訊息 → 直接進 Claude session、Claude 用「Casper」稱呼你
 
-跳過配對：`/line:access allow Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+跳過配對直接加：
+```text
+/line:access allow Uxxx... nickname="A君" title="助教" role=member
+```
+
+### 9. 使用者身份（暱稱 / 稱謂 / 角色）
+
+每個白名單 user 可選擇性帶三個欄位：
+
+| 欄位 | 必填 | 用途 | 範例 |
+|---|---|---|---|
+| `nickname` | 否 | Claude 稱呼你用的名字 | `Casper`、`A君` |
+| `title` | 否 | 你跟使用者的關係描述 | `助教`、`老師`、`媽媽` |
+| `role` | 是（預設 `member`） | 信任度。`owner` 完整信任、`member` 對破壞性操作會謹慎 | `owner` / `member` |
+
+設好後 Claude 收到該 user 的訊息會：
+- 看到 `nickname` → 用暱稱稱呼（「Casper，剛剛你說的…」）
+- 看到 `title` → 組合稱呼（「A 助教好」「老師你問的問題」）
+- 看到 `role=member` → 對破壞性操作（rm、改 secret、push commit 等）保持謹慎
+
+更新已存在使用者：
+```text
+/line:access set Uxxx nickname="A君" title="助教" role=member
+```
+
+清掉 nickname / title（傳空字串）：
+```text
+/line:access set Uxxx nickname=""
+```
+
+⚠️ `nickname` / `title` 是 advisory（純文字提示給 Claude 看），**不是 auth**。userId 才是真正的身份識別。
 
 ## 在另一台機器上安裝（migrate / 多機）
 
@@ -337,9 +368,10 @@ claude --dangerously-load-development-channels plugin:line@line-bot-channel
 | `/line:configure set-secret <SECRET>` | 設定 channel secret |
 | `/line:configure tunnel-mode <quick\|named\|external>` | 切 tunnel 模式 |
 | `/line:configure public-url <URL>` | 設 named/external 模式的公開 URL |
-| `/line:access list` | 顯示白名單 + pendingPairs + policy |
-| `/line:access pair <6-digit>` | 兌換配對碼 |
-| `/line:access allow <userId>` | 直接加白名單 |
+| `/line:access list` | 顯示白名單（含 nickname/title/role）+ pendingPairs + policy |
+| `/line:access pair <6-digit> [nickname=...] [title=...] [role=...]` | 兌換配對碼，可同時設身份 |
+| `/line:access allow <userId> [nickname=...] [title=...] [role=...]` | 直接加白名單 |
+| `/line:access set <userId> [nickname=...] [title=...] [role=...]` | 更新已存在 user 的身份 |
 | `/line:access remove <userId>` | 移出白名單 |
 | `/line:access policy <pair\|allowlist\|disabled>` | 切 DM 政策 |
 | `/line:tunnel status` | tunnel 狀態 |

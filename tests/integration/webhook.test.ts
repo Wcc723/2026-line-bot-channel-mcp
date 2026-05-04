@@ -40,8 +40,14 @@ function setupMockApi(): { base: string; calls: ApiCall[]; stop: () => Promise<v
   };
 }
 
+interface CapturedMsg {
+  type: string;
+  text?: string;
+  entry?: { userId: string; nickname?: string; title?: string; role: string };
+}
+
 interface Captured {
-  messages: { type: string; text?: string }[][];
+  messages: CapturedMsg[];
   systems: { level: string; message: string; data?: unknown }[];
 }
 
@@ -52,8 +58,11 @@ function makeNotifier(): { notifier: ReturnType<typeof captureNotifier>; capture
 
 function captureNotifier(captured: Captured) {
   return {
-    notifyMessage: (event: { text?: string; type: string }) => {
-      captured.messages.push([{ type: event.type, text: event.text }]);
+    notifyMessage: (
+      event: { text?: string; type: string },
+      entry?: { userId: string; nickname?: string; title?: string; role: string },
+    ) => {
+      captured.messages.push({ type: event.type, text: event.text, entry });
     },
     notifySystem: (level: "info" | "warning", message: string, data?: unknown) => {
       captured.systems.push({ level, message, data });
@@ -76,10 +85,20 @@ afterEach(async () => {
   await mock.stop();
 });
 
-function buildApp(opts: { policy: "pair" | "allowlist" | "disabled"; allow?: string[] } = { policy: "pair" }) {
+interface BuildAppOpts {
+  policy: "pair" | "allowlist" | "disabled";
+  allow?: string[];
+  /** 進階：對指定 user 設 nickname/title/role */
+  users?: { userId: string; nickname?: string; title?: string; role?: "owner" | "member" }[];
+}
+
+function buildApp(opts: BuildAppOpts = { policy: "pair" }) {
   const access = new AccessStore(accessFile);
   access.setPolicy(opts.policy);
   for (const u of opts.allow ?? []) access.allow(u);
+  for (const u of opts.users ?? []) {
+    access.allow(u.userId, { nickname: u.nickname, title: u.title, role: u.role });
+  }
   const replyStore = new ReplyTokenStore();
   const client = new LineClient("dummy-token", mock.base);
   const { notifier, captured } = makeNotifier();
@@ -111,6 +130,34 @@ async function flush() {
 }
 
 describe("webhook signature", () => {
+  it("allow user with nickname/title/role → notifier 收到 entry", async () => {
+    const { app, captured } = buildApp({
+      policy: "pair",
+      users: [{ userId: USER, nickname: "Casper", title: "老闆", role: "owner" }],
+    });
+    const body = {
+      events: [
+        {
+          type: "message",
+          webhookEventId: "ev-meta",
+          timestamp: 1,
+          source: { type: "user", userId: USER },
+          replyToken: "rep-meta",
+          message: { type: "text", id: "m1", text: "hi" },
+        },
+      ],
+    };
+    const res = await postWebhook(app, body);
+    expect(res.status).toBe(200);
+    await flush();
+    expect(captured.messages.length).toBe(1);
+    const entry = captured.messages[0]?.entry;
+    expect(entry?.userId).toBe(USER);
+    expect(entry?.nickname).toBe("Casper");
+    expect(entry?.title).toBe("老闆");
+    expect(entry?.role).toBe("owner");
+  });
+
   it("有效簽章 + 訊息事件 → 200 + notifier 收到", async () => {
     const { app, captured, access } = buildApp({ policy: "pair", allow: [USER] });
     expect(access.isAllowed(USER)).toBe(true);
@@ -130,7 +177,7 @@ describe("webhook signature", () => {
     expect(res.status).toBe(200);
     await flush();
     expect(captured.messages.length).toBe(1);
-    expect(captured.messages[0]?.[0]?.text).toBe("hello");
+    expect(captured.messages[0]?.text).toBe("hello");
   });
 
   it("無 x-line-signature → 401", async () => {

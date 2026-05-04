@@ -1,6 +1,7 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { NormalizedEvent } from "@/line/events.ts";
 import type { ChannelNotifier } from "@/webhook/dispatcher.ts";
+import type { UserEntry } from "@/access.ts";
 import { log } from "@/util/log.ts";
 
 /**
@@ -15,18 +16,20 @@ import { log } from "@/util/log.ts";
  */
 export function createMcpNotifier(server: Server): ChannelNotifier {
   return {
-    async notifyMessage(event: NormalizedEvent) {
+    async notifyMessage(event: NormalizedEvent, entry?: UserEntry) {
       const userId = event.userId ?? "unknown";
-      // LINE 1-on-1：chat_id 即 userId（同一個對話）
+      const displayUser = entry?.nickname ?? userId;
       const params = {
         content: event.text ?? `[${event.messageType ?? "non-text"}]`,
         meta: {
           chat_id: userId,
-          user: userId,
+          user: displayUser,                // 顯示用名稱（暱稱優先，沒有則 userId）
           user_id: userId,
+          ...(entry?.nickname ? { nickname: entry.nickname } : {}),
+          ...(entry?.title ? { title: entry.title } : {}),
+          ...(entry?.role ? { role: entry.role } : {}),
           ...(event.messageId ? { message_id: event.messageId } : {}),
           ts: new Date(event.timestamp).toISOString(),
-          // 自家額外資訊
           channel: "line",
           message_type: event.messageType,
           webhook_event_id: event.webhookEventId,

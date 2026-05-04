@@ -97,8 +97,24 @@ describe("AccessStore pair code", () => {
     const code = store.createPairCode(VALID_USER_A);
     const r = store.redeemPairCode(code);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.userId).toBe(VALID_USER_A);
+    if (r.ok) {
+      expect(r.userId).toBe(VALID_USER_A);
+      expect(r.entry.role).toBe("member");
+    }
     expect(store.isAllowed(VALID_USER_A)).toBe(true);
+  });
+
+  it("redeem 帶 opts 同時設身份", () => {
+    const code = store.createPairCode(VALID_USER_A);
+    const r = store.redeemPairCode(code, { nickname: "Casper", role: "owner" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.entry.nickname).toBe("Casper");
+      expect(r.entry.role).toBe("owner");
+    }
+    const u = store.getUser(VALID_USER_A);
+    expect(u?.nickname).toBe("Casper");
+    expect(u?.role).toBe("owner");
   });
 
   it("redeem 不存在的 code → code_not_found", () => {
@@ -109,7 +125,7 @@ describe("AccessStore pair code", () => {
   it("redeem 過期 code → code_expired", () => {
     const created = Date.now() - PAIR_CODE_TTL_MS - 1000;
     const code = store.createPairCode(VALID_USER_A, created);
-    const r = store.redeemPairCode(code, Date.now());
+    const r = store.redeemPairCode(code, {}, Date.now());
     expect(r).toEqual({ ok: false, reason: "code_expired" });
   });
 
@@ -141,11 +157,68 @@ describe("AccessStore allow / remove", () => {
     store.allow(VALID_USER_A);
     store.allow(VALID_USER_A);
     const snap = store.snapshot();
-    expect(snap.allowFrom.filter((u) => u === VALID_USER_A).length).toBe(1);
+    expect(snap.users.filter((u) => u.userId === VALID_USER_A).length).toBe(1);
   });
 
   it("invalid userId 不能 allow", () => {
     expect(() => store.allow("nope")).toThrow();
+  });
+
+  it("allow 帶 opts 設 nickname / title / role", () => {
+    const e = store.allow(VALID_USER_A, { nickname: "Casper", title: "老闆", role: "owner" });
+    expect(e.nickname).toBe("Casper");
+    expect(e.title).toBe("老闆");
+    expect(e.role).toBe("owner");
+    expect(e.addedAt).toBeGreaterThan(0);
+  });
+
+  it("allow 不帶 opts 預設 role=member、無 nickname/title", () => {
+    const e = store.allow(VALID_USER_A);
+    expect(e.role).toBe("member");
+    expect(e.nickname).toBeUndefined();
+    expect(e.title).toBeUndefined();
+  });
+
+  it("allow 第二次帶新 opts → 合併（已設的不被清掉）", () => {
+    store.allow(VALID_USER_A, { nickname: "Casper" });
+    const e = store.allow(VALID_USER_A, { role: "owner" });
+    expect(e.nickname).toBe("Casper");
+    expect(e.role).toBe("owner");
+  });
+
+  it("allow 拒絕無效 role", () => {
+    expect(() => store.allow(VALID_USER_A, { role: "admin" as never })).toThrow();
+  });
+});
+
+describe("AccessStore setMeta / getUser", () => {
+  it("setMeta 更新已存在 user 的欄位", () => {
+    store.allow(VALID_USER_A, { role: "member" });
+    const e = store.setMeta(VALID_USER_A, { nickname: "A君", title: "助教" });
+    expect(e.nickname).toBe("A君");
+    expect(e.title).toBe("助教");
+    expect(e.role).toBe("member"); // 未動
+  });
+
+  it("setMeta 傳空 nickname 會清掉", () => {
+    store.allow(VALID_USER_A, { nickname: "X" });
+    const e = store.setMeta(VALID_USER_A, { nickname: "" });
+    expect(e.nickname).toBeUndefined();
+  });
+
+  it("setMeta 對不存在的 user → throw", () => {
+    expect(() => store.setMeta(VALID_USER_A, { nickname: "A" })).toThrow(/not in allowlist/);
+  });
+
+  it("getUser 找不到回 undefined", () => {
+    expect(store.getUser(VALID_USER_A)).toBeUndefined();
+  });
+
+  it("getUser 回的物件是 clone（mutate 不影響內部）", () => {
+    store.allow(VALID_USER_A, { nickname: "A" });
+    const e = store.getUser(VALID_USER_A);
+    if (e) e.nickname = "X";
+    expect(store.getUser(VALID_USER_A)?.nickname).toBe("A");
   });
 });
 
@@ -161,13 +234,29 @@ describe("AccessStore persistence", () => {
   it("snapshot 不會 mutate 原 state", () => {
     store.allow(VALID_USER_A);
     const snap = store.snapshot();
-    snap.allowFrom.push(VALID_USER_B);
+    snap.users.push({ userId: VALID_USER_B, role: "member", addedAt: Date.now() });
     expect(store.isAllowed(VALID_USER_B)).toBe(false);
   });
 
   it("檔案不存在時用預設值", () => {
     const fresh = new AccessStore(join(tmp, "nope.json"));
     expect(fresh.policy()).toBe("pair");
-    expect(fresh.snapshot().allowFrom).toEqual([]);
+    expect(fresh.snapshot().users).toEqual([]);
+  });
+
+  it("讀到舊 schema（allowFrom）會被忽略，當作空白名單", () => {
+    // v0.0.1 → v0.1.0 沒做 migration；舊資料應一筆都讀不進來
+    const legacyFile = join(tmp, "legacy.json");
+    Bun.write(legacyFile, JSON.stringify({
+      dmPolicy: "allowlist",
+      allowFrom: [VALID_USER_A],
+      pendingPairs: {},
+    }));
+    const legacy = new AccessStore(legacyFile);
+    // policy 仍能讀到（與 users 解析無關）
+    expect(legacy.policy()).toBe("allowlist");
+    // 但 users 會是空（不認 allowFrom）
+    expect(legacy.snapshot().users).toEqual([]);
+    expect(legacy.isAllowed(VALID_USER_A)).toBe(false);
   });
 });

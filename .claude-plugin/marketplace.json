@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "LINE Messaging API channel for Claude Code (single-plugin marketplace)",
-    "version": "0.0.1"
+    "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "line",
       "source": "./",
       "description": "LINE Messaging API channel — 雙向訊息互動，含白名單與 Cloudflare Tunnel 整合",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "author": {
         "name": "wcc723"
       },
