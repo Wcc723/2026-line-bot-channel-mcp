@@ -40,6 +40,7 @@ async function main() {
     mode: config.tunnelMode,
     port: config.webhookPort,
     publicUrl: config.publicUrl,
+    tunnelName: config.tunnelName,
   });
   shutdown.add("tunnel", () => tunnel.stop());
 

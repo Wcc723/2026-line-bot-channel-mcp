@@ -10,6 +10,8 @@ export interface LineConfig {
   webhookPort: number;
   publicUrl?: string;
   tunnelMode: TunnelMode;
+  /** named mode 下若設定，channel 啟動時自動 spawn `cloudflared tunnel run <name>` */
+  tunnelName?: string;
   apiBase?: string;
   stateDir: string;
 }
@@ -69,6 +71,8 @@ export function loadConfig(): LineConfig {
   const tunnelModeRaw = (pick(fileEnv, "LINE_TUNNEL_MODE") ?? "quick").toLowerCase();
   const tunnelMode: TunnelMode =
     tunnelModeRaw === "named" || tunnelModeRaw === "external" ? tunnelModeRaw : "quick";
+  const tunnelNameRaw = pick(fileEnv, "LINE_TUNNEL_NAME");
+  const tunnelName = tunnelNameRaw && tunnelNameRaw.length > 0 ? tunnelNameRaw : undefined;
   const apiBase = pick(fileEnv, "LINE_API_BASE");
 
   return {
@@ -77,6 +81,7 @@ export function loadConfig(): LineConfig {
     webhookPort: Number.isFinite(port) ? port : DEFAULT_PORT,
     publicUrl,
     tunnelMode,
+    tunnelName,
     apiBase,
     stateDir,
   };
