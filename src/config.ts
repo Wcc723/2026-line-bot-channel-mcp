@@ -14,6 +14,13 @@ export interface LineConfig {
   tunnelName?: string;
   apiBase?: string;
   stateDir: string;
+  /**
+   * PID file 路徑：用來在啟動時偵測並清掉前次孤兒 instance。
+   * - undefined（預設）：用 `<stateDir>/server.pid`
+   * - 具體路徑：覆寫
+   * - null：完全停用（LINE_PID_FILE=off）
+   */
+  pidFilePath: string | null;
 }
 
 const DEFAULT_PORT = 8788;
@@ -75,6 +82,16 @@ export function loadConfig(): LineConfig {
   const tunnelName = tunnelNameRaw && tunnelNameRaw.length > 0 ? tunnelNameRaw : undefined;
   const apiBase = pick(fileEnv, "LINE_API_BASE");
 
+  const pidFileRaw = pick(fileEnv, "LINE_PID_FILE");
+  let pidFilePath: string | null;
+  if (pidFileRaw === "off") {
+    pidFilePath = null;
+  } else if (pidFileRaw && pidFileRaw.length > 0) {
+    pidFilePath = pidFileRaw;
+  } else {
+    pidFilePath = join(stateDir, "server.pid");
+  }
+
   return {
     channelAccessToken,
     channelSecret,
@@ -84,6 +101,7 @@ export function loadConfig(): LineConfig {
     tunnelName,
     apiBase,
     stateDir,
+    pidFilePath,
   };
 }
 

@@ -281,6 +281,7 @@ pkill -f "cloudflared tunnel run"
 | `LINE_STATE_DIR` |  | `~/.claude/channels/line` | 設定 / allowlist / log 檔的位置 |
 | `LINE_LOG_FILE` |  | `<state>/server.log` | 設 `off` 完全關閉檔案 log |
 | `LINE_LOG_LEVEL` |  | `info` | `debug` / `info` / `warn` / `error` |
+| `LINE_PID_FILE` |  | `<state>/server.pid` | channel 啟動時用 PID file 偵測並清掉前次孤兒 instance；設 `off` 完全停用 |
 
 可寫在 `~/.claude/channels/line/.env`，也可走 shell env 覆寫。
 
@@ -383,13 +384,21 @@ cloudflared 通了，但 channel server 沒在 listen `localhost:8788`。
 
 ### `/mcp` 顯示 `line · ✘ failed` 或 `Failed to reconnect to line`
 
-九成是 port 8788 撞了。常見原因：
+**v0.2.1+ 會在啟動時自動清掉前次留下的孤兒 instance**（透過 `~/.claude/channels/line/server.pid`），所以這個錯誤現在很罕見。如果還是看到：
 
-- 上一個 session 的孤兒 bun 沒清掉：
-  ```bash
-  lsof -nP -iTCP:8788 -sTCP:LISTEN -t | xargs -I{} kill {} 2>/dev/null
-  ```
-- 你在 plugin 的 git clone 目錄下起 claude（**只有開發者會碰到**）：專案層 `.mcp.json` 跟 plugin MCP 搶 port，從別處啟動即可。
+1. **server log 看自動清理結果**：
+   ```bash
+   tail -20 ~/.claude/channels/line/server.log
+   ```
+   應出現 `pidfile: cleaned previous instance pid=...` 或 `pidfile: stale ...`。
+2. **port 8788 被非 channel 程式占住**：
+   ```bash
+   lsof -nP -iTCP:8788 -sTCP:LISTEN
+   ```
+   看 COMMAND 不是 `bun.exe`，就是其他工具佔用，要自行處理。
+3. **你在 plugin 的 git clone 目錄下起 claude**（只有開發者會碰到）：專案層 `.mcp.json` 跟 plugin MCP 搶 port，從別處啟動即可。
+
+要強制完全停用自動清理，設 `LINE_PID_FILE=off`。
 
 ### Webhook Verify 顯示 `400 Bad request` 或 `{message:null,...}`
 

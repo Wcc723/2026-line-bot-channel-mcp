@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { loadConfig } from "@/config.ts";
 import { AccessStore } from "@/access.ts";
 import { LineClient } from "@/line/client.ts";
@@ -7,13 +8,46 @@ import { createApp } from "@/webhook/server.ts";
 import { startMcpServer } from "@/mcp/server.ts";
 import { startTunnel } from "@/tunnel/orchestrator.ts";
 import { ShutdownRegistry } from "@/util/shutdown.ts";
+import { cleanupPreviousInstance, writePidFile, removePidFile } from "@/util/pidfile.ts";
 import { log } from "@/util/log.ts";
+
+function isPortBusy(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: "127.0.0.1", port });
+    const cleanup = () => {
+      try {
+        sock.destroy();
+      } catch {
+        // ignore
+      }
+    };
+    sock.on("connect", () => {
+      cleanup();
+      resolve(true);
+    });
+    sock.on("error", () => {
+      cleanup();
+      resolve(false);
+    });
+  });
+}
 
 async function main() {
   const shutdown = new ShutdownRegistry();
   shutdown.install();
 
   let config = loadConfig();
+  const pidFilePath = config.pidFilePath;
+
+  // 啟動清理：上次 instance 沒乾淨退出 → 主動清掉，避免撞 port
+  if (pidFilePath) {
+    await cleanupPreviousInstance({
+      pidFilePath,
+      selfMarkers: ["bun", "server.ts"],
+      portCheck: () => isPortBusy(config.webhookPort),
+    });
+  }
+
   const access = new AccessStore();
   const replyStore = new ReplyTokenStore();
   replyStore.startGc();
@@ -34,6 +68,12 @@ async function main() {
   shutdown.add("http", () => {
     httpServer.stop(true);
   });
+
+  // 寫 PID file（在 Bun.serve 成功後才寫，確保檔內 PID 真的是綁住 port 的人）
+  if (pidFilePath) {
+    writePidFile(pidFilePath, process.pid);
+    shutdown.add("pidfile", () => removePidFile(pidFilePath));
+  }
 
   // Tunnel
   const tunnel = startTunnel({
