@@ -6,7 +6,7 @@
 - 你在 LINE 傳的訊息會被推進 Claude session，由 Claude 看到並回覆
 - 內建白名單（pair / allowlist / disabled 三種 policy）
 - **使用者身份**：每個白名單 user 可標 **暱稱 / 稱謂 / 角色**，Claude 會用你給的名字稱呼、依角色調整信任度
-- 整合 **Cloudflare Named Tunnel**，URL 永久固定（亦支援 quick / external 模式）
+- 搭配你**自管的常駐 tunnel**（建議 Cloudflare Named Tunnel），webhook URL 永久固定。channel 本身只 listen 本機 port，**不再代管 cloudflared 子進程**
 
 ## 架構
 
@@ -57,7 +57,9 @@ LINE 帳號層級對照：
 
 ## Quick Start
 
-預設走 **named tunnel**——URL 永久固定，LINE Console webhook URL 設一次就好。
+你先把一條**常駐的 Cloudflare Named Tunnel** 跑起來（與 Claude 解耦、開機自動啟動），channel 只透過 `LINE_PUBLIC_URL` 指向它——URL 永久固定，LINE Console webhook URL 設一次就好。
+
+> **v0.3.0 起：channel 不再自動 spawn cloudflared。** 過去由 channel 代管的 cloudflared 子進程，連線穩定度與 Claude session lifecycle 綁在一起，session 重啟時容易斷線。現在 tunnel 改由你自管成常駐服務，channel 只 listen `localhost:8788`。舊 `.env` 裡的 `LINE_TUNNEL_MODE` / `LINE_TUNNEL_NAME` 會被忽略，不需要移除。
 
 ### 1. 申請 LINE Messaging API channel
 
@@ -99,7 +101,7 @@ ingress:
 EOF
 ```
 
-驗證 tunnel 設定 OK（不需要持續跑著，只是測試一次）：
+驗證 tunnel 設定 OK（先手動跑一次測試）：
 
 ```bash
 # 啟動 tunnel
@@ -112,6 +114,67 @@ curl -s https://line-bot.example.com/
 
 # 看到 "tunnel ok!" 即通了
 pkill -f "cloudflared tunnel run"
+```
+
+#### 2-1. 把 tunnel 變成「永久性連線」（常駐服務）
+
+⚠️ **重點**：channel **不會**幫你跑 cloudflared。你必須自己讓 tunnel **常駐**——開機自動啟動、crash 自動重連、跟 Claude session 完全解耦。這樣 session 重啟也不會斷線。
+
+**推薦：裝成系統服務（macOS launchd / Linux systemd）**
+
+```bash
+# cloudflared 會讀 ~/.cloudflared/config.yml，註冊成開機自動啟動、crash 自動重連的背景服務
+sudo cloudflared service install
+
+# 啟動服務
+sudo launchctl start com.cloudflare.cloudflared   # macOS
+# sudo systemctl enable --now cloudflared          # Linux
+
+# 確認在跑（看到 connection registered / 4 條連線即 OK）
+cloudflared tunnel info line-bot-channel
+```
+
+之後 cloudflared 就一直在背景跑、開機自動起，你完全不用再管它。要停掉：
+
+```bash
+sudo cloudflared service uninstall   # 移除服務
+```
+
+**替代方案：自管 LaunchAgent（不用 sudo、跟著登入的使用者跑）**
+
+在 `~/Library/LaunchAgents/com.line-bot.cloudflared.plist` 放：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.line-bot.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>run</string>
+    <string>line-bot-channel</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/cloudflared-line-bot.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.line-bot.cloudflared.plist
+# 之後開機 / 登入就會自動起，crash（KeepAlive）也會自動重連
+```
+
+> `cloudflared` 路徑用 `which cloudflared` 確認（Apple Silicon 通常 `/opt/homebrew/bin`，Intel `/usr/local/bin`）。
+
+**最後手段：手動背景跑（只適合測試，重開機就沒了）**
+
+```bash
+nohup cloudflared tunnel run line-bot-channel >/tmp/cloudflared-line-bot.log 2>&1 &
 ```
 
 ### 3. 安裝 plugin
@@ -136,14 +199,12 @@ cat > ~/.claude/channels/line/.env <<EOF
 LINE_CHANNEL_ACCESS_TOKEN=<貼你的>
 LINE_CHANNEL_SECRET=<貼你的>
 LINE_WEBHOOK_PORT=8788
-LINE_TUNNEL_MODE=named
-LINE_TUNNEL_NAME=line-bot-channel
 LINE_PUBLIC_URL=https://line-bot.example.com
 EOF
 chmod 600 ~/.claude/channels/line/.env
 ```
 
-設定 `LINE_TUNNEL_NAME` 後，channel 啟動時會**自動 spawn `cloudflared tunnel run line-bot-channel`**，你不用另外開終端。
+`LINE_PUBLIC_URL` 就是你在步驟 2 設好的那條常駐 tunnel 的固定網域。channel 只用它來顯示 / 提示 webhook URL（`<LINE_PUBLIC_URL>/webhook`），實際的 tunnel 由你在步驟 2-1 跑成常駐服務。
 
 ### 5. 啟動 channel session
 
@@ -184,15 +245,18 @@ curl -X POST https://api.line.me/v2/bot/channel/webhook/test \
 
 完成。要讓 Claude 主動傳訊息：在 session 直接叫它用 `line_reply` / `line_push` tool。
 
-## 三種 Tunnel 模式
+## Tunnel 由你自管
 
-| 模式 | URL 穩定度 | cloudflared 啟動 | 適用場景 |
-|---|---|---|---|
-| **named**（推薦） | ✅ 永久固定 | channel 自動 spawn（`LINE_TUNNEL_NAME` 設了的話）<br>否則使用者自管 | 生產、長期使用、LINE Bot |
-| **quick** | ❌ 每次重啟換 URL | channel 自動 spawn | demo、不接 LINE 的場景 |
-| **external** | 視你用什麼工具 | 完全不管 | ngrok / Tailscale Funnel / 其他 |
+從 v0.3.0 起，channel **不再代管任何 tunnel 子進程**。它只 listen `localhost:8788`，對外的公開 URL 完全由你提供（`LINE_PUBLIC_URL`）。
 
-⚠️ **不建議用 quick 跑 LINE Bot**：每次 channel 重啟 trycloudflare URL 會變，要回 LINE Console 重貼，操作成本高。
+為什麼？過去 channel 會在啟動時 spawn cloudflared（quick / named 模式），但子進程的連線跟 Claude session lifecycle 綁在一起：session 一重啟、cloudflared 跟著重連，trycloudflare 的 quick URL 還會變，造成**斷線與訊息漏接**。把 tunnel 抽出來跑成常駐服務後，它與 Claude 解耦，session 隨便重啟都不影響線路。
+
+| 你的選擇 | URL 穩定度 | 怎麼跑 |
+|---|---|---|
+| **Cloudflare Named Tunnel**（推薦） | ✅ 永久固定 | 跑成常駐服務（見 [Quick Start 步驟 2-1](#2-1-把-tunnel-變成永久性連線常駐服務)） |
+| ngrok / Tailscale Funnel / 其他 | 視工具而定 | 你自己起，把固定網域填進 `LINE_PUBLIC_URL` |
+
+不論用哪種，原則一樣：**先有一條常駐、URL 固定的 tunnel 轉發到 `localhost:8788`，再把該 URL 填進 `LINE_PUBLIC_URL`。**
 
 ## 使用者身份（暱稱 / 稱謂 / 角色）
 
@@ -236,7 +300,7 @@ curl -fsSL https://raw.githubusercontent.com/wcc723/2026-line-bot-channel-mcp/ma
 2. 裝 `bun`、`cloudflared`（如果還沒）
 3. `claude plugin marketplace add wcc723/2026-line-bot-channel-mcp` + `install line@line-bot-channel`
 4. 偵測你 `~/.claude/channels/line/.env` 是否已就位（有就驗欄位長度，沒有就提示要怎麼搬）
-5. 偵測 `LINE_TUNNEL_MODE`，若為 `named` 額外提示要複製 `~/.cloudflared/`
+5. 提示要把 `~/.cloudflared/`（named tunnel 的 config + credentials）一起搬過來，並重新跑成常駐服務
 6. 印出「下一步啟動命令」
 
 腳本不會碰 secrets——`.env` 跟 cloudflared credentials 你必須手動從舊機器**安全搬過來**（scp / AirDrop / 1Password / 加密 USB），不要走 email、git、Slack 等。
@@ -246,7 +310,7 @@ curl -fsSL https://raw.githubusercontent.com/wcc723/2026-line-bot-channel-mcp/ma
 | 檔案 | 何時需要 | 怎麼搬 |
 |---|---|---|
 | `~/.claude/channels/line/.env` | 永遠需要 | `scp old:~/.claude/channels/line/.env ~/.claude/channels/line/.env`<br>之後 `chmod 600` |
-| `~/.cloudflared/config.yml` + `~/.cloudflared/<tunnel-id>.json` | 只有 `LINE_TUNNEL_MODE=named` 需要 | `scp old:~/.cloudflared/* ~/.cloudflared/`<br>記得改 `config.yml` 裡 `credentials-file` 路徑 |
+| `~/.cloudflared/config.yml` + `~/.cloudflared/<tunnel-id>.json` | 用 Cloudflare Named Tunnel 時需要 | `scp old:~/.cloudflared/* ~/.cloudflared/`<br>記得改 `config.yml` 裡 `credentials-file` 路徑，搬完在新機器重跑 `sudo cloudflared service install` |
 
 LINE Console 的 webhook URL **不需要改**（DNS CNAME 不變）。
 
@@ -262,10 +326,12 @@ LINE Console 的 webhook URL **不需要改**（DNS CNAME 不變）。
 ```bash
 # 在舊機器
 # 退出 Claude session（/quit）
-pkill -f "cloudflared tunnel run"
+sudo cloudflared service uninstall          # 若是裝成系統服務
+# 或：launchctl unload ~/Library/LaunchAgents/com.line-bot.cloudflared.plist  # 若用 LaunchAgent
+# 或：pkill -f "cloudflared tunnel run"      # 若只是手動背景跑
 ```
 
-要兩台輪流用：每次只在一台啟動 Claude session，DNS / tunnel 都不用動。
+要兩台輪流用：每次只在一台跑常駐 tunnel + 啟動 Claude session，DNS 不用動。
 
 ## Environment Variables
 
@@ -274,9 +340,7 @@ pkill -f "cloudflared tunnel run"
 | `LINE_CHANNEL_ACCESS_TOKEN` | ✅ | — | LINE long-lived channel access token |
 | `LINE_CHANNEL_SECRET` | ✅ | — | LINE channel secret（簽章驗證用） |
 | `LINE_WEBHOOK_PORT` |  | `8788` | 本地 webhook server port |
-| `LINE_TUNNEL_MODE` |  | `quick` | `quick` / `named` / `external` |
-| `LINE_TUNNEL_NAME` |  | — | named mode 設了會自動 spawn `cloudflared tunnel run <name>`；不設則使用者自管 tunnel |
-| `LINE_PUBLIC_URL` |  | — | named/external 模式的固定公開 URL |
+| `LINE_PUBLIC_URL` |  | — | 你自管常駐 tunnel 的固定公開 URL（webhook 為 `<此值>/webhook`）。未設則只 listen port、不提示 URL |
 | `LINE_API_BASE` |  | `https://api.line.me` | 測試時可指向 mock server |
 | `LINE_STATE_DIR` |  | `~/.claude/channels/line` | 設定 / allowlist / log 檔的位置 |
 | `LINE_LOG_FILE` |  | `<state>/server.log` | 設 `off` 完全關閉檔案 log |
@@ -292,17 +356,15 @@ pkill -f "cloudflared tunnel run"
 | `/line:configure` | 看當前設定 |
 | `/line:configure set-token <TOKEN>` | 設定 channel access token |
 | `/line:configure set-secret <SECRET>` | 設定 channel secret |
-| `/line:configure tunnel-mode <quick\|named\|external>` | 切 tunnel 模式 |
-| `/line:configure public-url <URL>` | 設 named/external 模式的公開 URL |
+| `/line:configure public-url <URL>` | 設你自管常駐 tunnel 的固定公開 URL |
 | `/line:access list` | 顯示白名單（含 nickname/title/role）+ pendingPairs + policy |
 | `/line:access pair <6-digit> [nickname=...] [title=...] [role=...]` | 兌換配對碼，可同時設身份 |
 | `/line:access allow <userId> [nickname=...] [title=...] [role=...]` | 直接加白名單 |
 | `/line:access set <userId> [nickname=...] [title=...] [role=...]` | 更新已存在 user 的身份 |
 | `/line:access remove <userId>` | 移出白名單 |
 | `/line:access policy <pair\|allowlist\|disabled>` | 切 DM 政策 |
-| `/line:tunnel status` | tunnel 狀態 |
-| `/line:tunnel url` | 印當前 webhook URL |
-| `/line:tunnel restart` | 重啟 cloudflared（quick / named-auto 模式） |
+| `/line:tunnel status` | 顯示 channel 看到的公開 URL / port（tunnel 由你自管） |
+| `/line:tunnel url` | 印當前 webhook URL（`<LINE_PUBLIC_URL>/webhook`） |
 
 完整 access policy 行為見 [ACCESS.md](./ACCESS.md)。
 
@@ -335,11 +397,10 @@ tail -F ~/.claude/channels/line/server.log
 # 終端 1：起 mock LINE API
 bun run tests/e2e/harness.ts up 9999
 
-# 終端 2：起 channel（測試模式：API base 指向 mock，tunnel 走 external）
+# 終端 2：起 channel（測試模式：API base 指向 mock，不需要真的 tunnel）
 LINE_CHANNEL_ACCESS_TOKEN=test-token \
 LINE_CHANNEL_SECRET=test-secret \
 LINE_API_BASE=http://localhost:9999 \
-LINE_TUNNEL_MODE=external \
 LINE_PUBLIC_URL=http://localhost:8788 \
 LINE_STATE_DIR=/tmp/line-e2e-state \
 bun start
@@ -372,7 +433,8 @@ bun test tests/integration   # 整合
    要看到 `"chatMode":"bot"`。如果是 `"chat"`，回 OA Manager → Response settings → Chat 切 Off。
 2. **server log 沒看到 `event received`**：webhook 沒進到 channel。
    - 檢查 `/line:tunnel status` 的 url、確認跟 LINE Console webhook URL 一致
-   - cloudflared 是否在跑：`pgrep -f "cloudflared tunnel run"`
+   - 你的常駐 tunnel 是否在跑：`cloudflared tunnel info <你的 tunnel name>`（看到 4 條 connection 即正常），或 `pgrep -f "cloudflared tunnel run"`
+   - **這是最常見的斷線點**：tunnel 必須是常駐服務（見 Quick Start 步驟 2-1）。若你只在某個終端手動 `cloudflared tunnel run`，終端關掉或電腦休眠就會斷
 3. **server log 看到 `event received` 但 session 沒反應**：通常是 plugin 沒裝（只用 `--plugin-dir`）或忘了 `--dangerously-load-development-channels`。確認 `claude plugin list` 有 `line@line-bot-channel ✔ enabled`、`/mcp` 顯示 `connected`。
 
 ### `Unable to reach the origin service ... connection refused`
@@ -423,13 +485,21 @@ curl -X POST https://api.line.me/v2/bot/channel/webhook/test \
 
 這是 LINE OA 的預設自動回應模板，代表 chatMode 是 `chat` 或 `Auto-response messages` 開著。回 OA Manager 全關掉。
 
-### 自動 spawn cloudflared 沒生效
+### 一直斷線 / session 重啟後 webhook 就不通
 
-named mode 下 channel 應該自動 spawn cloudflared。檢查：
+幾乎都是 tunnel **沒跑成常駐服務**——它跟某個終端或 Claude session 綁在一起，那個一收掉、電腦一休眠 tunnel 就斷。
 
-- `LINE_TUNNEL_NAME` 有沒有設？沒設就維持「使用者自管」行為
-- log 看到 `cloudflared not in PATH` → 裝 cloudflared 後重啟 channel
-- log 看到 `detected existing cloudflared ... skipping spawn` → 表示你（或 launchd）已有一份在跑，**這是預期的**，channel 不會搶
+- 確認 tunnel 是獨立的常駐服務（見 Quick Start 步驟 2-1）：
+  ```bash
+  # 系統服務
+  sudo launchctl list | grep cloudflared          # macOS
+  # 或 LaunchAgent
+  launchctl list | grep com.line-bot.cloudflared
+  # 連線健康度（看到 4 條 connection registered 即正常）
+  cloudflared tunnel info <你的 tunnel name>
+  ```
+- channel **不會**幫你起 cloudflared（v0.3.0 起移除了自動 spawn）。`/line:tunnel status` 只反映你在 `.env` 設的 `LINE_PUBLIC_URL`，不代表 tunnel 真的活著——要用上面的指令確認常駐服務。
+- 確認 `cloudflared` 在 PATH（`which cloudflared`），且 service 啟動時讀到正確的 `~/.cloudflared/config.yml`。
 
 ### Reply token expired
 

@@ -188,17 +188,12 @@ const INTERNAL_TOOLS: Tool[] = [
   },
   {
     name: "_tunnel_status",
-    description: "Get current tunnel mode, status, and webhook URL.",
+    description: "Get current tunnel status (user-managed) and webhook URL.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "_tunnel_url",
     description: "Print the current public webhook URL (for copy/paste into LINE Developers Console).",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "_tunnel_restart",
-    description: "Restart the cloudflared quick tunnel (only effective in quick mode). URL may change.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -215,8 +210,7 @@ const INTERNAL_TOOLS: Tool[] = [
         channel_access_token: { type: "string" },
         channel_secret: { type: "string" },
         webhook_port: { type: "number" },
-        public_url: { type: "string" },
-        tunnel_mode: { type: "string", enum: ["quick", "named", "external"] },
+        public_url: { type: "string", description: "使用者自管 tunnel 的固定公開 URL（不含 /webhook）" },
       },
     },
   },
@@ -297,11 +291,12 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           return asJson(deps.tunnel.status());
         case "_tunnel_url": {
           const url = deps.tunnel.status().url;
-          return asResult(url ? `${url}/webhook` : "(尚無 URL，可能 tunnel 未啟動或仍在初始化)");
+          return asResult(
+            url
+              ? `${url}/webhook`
+              : "(尚未設定 LINE_PUBLIC_URL；請設好你常駐 tunnel 的固定 URL 後重啟 channel)",
+          );
         }
-        case "_tunnel_restart":
-          await deps.tunnel.restart();
-          return asResult("已要求 tunnel 重啟。");
         case "_configure_show":
           return asJson(callConfigureShow(deps));
         case "_configure_set":
@@ -312,7 +307,6 @@ export function registerTools(server: Server, deps: ToolDeps): void {
               channel_secret?: string;
               webhook_port?: number;
               public_url?: string;
-              tunnel_mode?: string;
             },
           );
         default:
@@ -398,8 +392,7 @@ function callConfigureShow(deps: ToolDeps) {
     LINE_CHANNEL_ACCESS_TOKEN: maskToken(map.LINE_CHANNEL_ACCESS_TOKEN ?? ""),
     LINE_CHANNEL_SECRET: maskToken(map.LINE_CHANNEL_SECRET ?? ""),
     LINE_WEBHOOK_PORT: map.LINE_WEBHOOK_PORT ?? "(default 8788)",
-    LINE_TUNNEL_MODE: map.LINE_TUNNEL_MODE ?? "(default quick)",
-    LINE_PUBLIC_URL: map.LINE_PUBLIC_URL ?? "(unset)",
+    LINE_PUBLIC_URL: map.LINE_PUBLIC_URL ?? "(unset — 設成你常駐 tunnel 的固定 URL)",
   };
 }
 
@@ -415,7 +408,6 @@ function callConfigureSet(
     channel_secret?: string;
     webhook_port?: number;
     public_url?: string;
-    tunnel_mode?: string;
   },
 ) {
   for (const [k, v] of Object.entries(args)) {
@@ -436,12 +428,6 @@ function callConfigureSet(
   if (args.channel_secret) existing.LINE_CHANNEL_SECRET = args.channel_secret;
   if (args.webhook_port) existing.LINE_WEBHOOK_PORT = String(args.webhook_port);
   if (args.public_url) existing.LINE_PUBLIC_URL = args.public_url;
-  if (args.tunnel_mode) {
-    if (!["quick", "named", "external"].includes(args.tunnel_mode)) {
-      return asResult(`tunnel_mode 必須是 quick / named / external`);
-    }
-    existing.LINE_TUNNEL_MODE = args.tunnel_mode;
-  }
   const content =
     Object.entries(existing)
       .map(([k, v]) => `${k}=${v}`)

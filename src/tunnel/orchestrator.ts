@@ -1,305 +1,57 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { log } from "@/util/log.ts";
-import type { TunnelMode } from "@/config.ts";
 
 export interface TunnelStatus {
-  mode: TunnelMode;
   url: string | null;
-  state: "starting" | "running" | "restarting" | "stopped" | "error" | "external";
+  /** channel 不再自管 tunnel，狀態恆為 external（使用者自管） */
+  state: "external";
   port: number;
-  message?: string;
+  message: string;
 }
 
 export interface TunnelController {
   status(): TunnelStatus;
-  restart(): Promise<void>;
-  stop(): Promise<void>;
-  /** 註冊 URL 變動回呼（quick mode 重啟時 URL 會變） */
+  /** 註冊 URL 回呼。URL 由 LINE_PUBLIC_URL 提供，固定不變 */
   onUrl(cb: (url: string) => void): () => void;
 }
 
 interface StartOpts {
-  mode: TunnelMode;
   port: number;
+  /** 使用者自管的固定公開 URL（LINE_PUBLIC_URL）。指向使用者常駐的 cloudflared tunnel */
   publicUrl?: string;
-  /** named mode 才看；設了就自動 spawn `cloudflared tunnel run <tunnelName>` */
-  tunnelName?: string;
-}
-
-const TRYCLOUDFLARE_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
-const RESTART_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
-
-export function startTunnel(opts: StartOpts): TunnelController {
-  if (opts.mode === "external") return externalController(opts);
-  if (opts.mode === "named") {
-    if (opts.tunnelName) {
-      return namedAutoController({ ...opts, tunnelName: opts.tunnelName });
-    }
-    return externalController(opts);
-  }
-  return quickController(opts);
-}
-
-function externalController(opts: StartOpts): TunnelController {
-  const url = opts.publicUrl ?? null;
-  const subscribers = new Set<(url: string) => void>();
-  if (url) for (const cb of subscribers) cb(url);
-  return {
-    status: () => ({
-      mode: opts.mode,
-      url,
-      state: "external",
-      port: opts.port,
-      message:
-        opts.mode === "named"
-          ? "named mode: 使用者自管 cloudflared named tunnel；channel 只 listen port"
-          : "external mode: 使用者自管 tunnel（ngrok 等）；channel 只 listen port",
-    }),
-    restart: async () => {
-      log.warn("tunnel: restart noop in external/named mode");
-    },
-    stop: async () => {},
-    onUrl: (cb) => {
-      subscribers.add(cb);
-      if (url) cb(url);
-      return () => subscribers.delete(cb);
-    },
-  };
-}
-
-function detectExistingTunnel(name: string): boolean {
-  try {
-    const out = execSync(`pgrep -f "cloudflared tunnel run ${name}"`, { encoding: "utf8" });
-    return out.trim().length > 0;
-  } catch {
-    return false;
-  }
 }
 
 /**
- * named mode + LINE_TUNNEL_NAME：channel 啟動時自動 spawn `cloudflared tunnel run <name>`，
- * lifecycle 跟 channel 綁。已偵測到同名 tunnel 在跑就 skip（避免兩份重複連 Cloudflare）。
- * cloudflared 不在 PATH 會降級為 external（純 listen，使用者自管）。
+ * Channel 不再自動 spawn cloudflared——過去 quick/named 模式由 channel 代管
+ * cloudflared 子進程，但子進程的連線穩定度與 channel lifecycle 綁在一起，
+ * 容易在 session 重啟時斷線。
+ *
+ * 現在 tunnel 完全由使用者自管（建議：常駐的 `cloudflared` named tunnel，
+ * 例如 `cloudflared service install` 或 launchd），與 channel 解耦。
+ * Channel 只 listen 本機 port；對外的公開 URL 由 LINE_PUBLIC_URL 提供。
  */
-function namedAutoController(opts: StartOpts & { tunnelName: string }): TunnelController {
-  let proc: ChildProcess | null = null;
-  let state: TunnelStatus["state"] = "starting";
-  let restartAttempt = 0;
-  let stopRequested = false;
-  let degraded = false;
+export function startTunnel(opts: StartOpts): TunnelController {
   const url = opts.publicUrl ?? null;
   const subscribers = new Set<(url: string) => void>();
-  const notifyUrl = () => {
-    if (url && state === "running") for (const cb of subscribers) cb(url);
-  };
 
-  const spawnOnce = () => {
-    if (degraded) return;
-    if (detectExistingTunnel(opts.tunnelName)) {
-      log.warn(`tunnel: detected existing cloudflared for "${opts.tunnelName}", skipping spawn`);
-      state = "running";
-      notifyUrl();
-      return;
-    }
-    state = restartAttempt === 0 ? "starting" : "restarting";
-    log.info("tunnel: spawning cloudflared tunnel run", {
-      name: opts.tunnelName,
-      attempt: restartAttempt,
-    });
-    let child: ChildProcess;
-    try {
-      child = spawn("cloudflared", ["tunnel", "run", opts.tunnelName], {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      handleSpawnFailure(err);
-      return;
-    }
-    proc = child;
-
-    const onData = (chunk: Buffer | string) => {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      // cloudflared 啟動成功會印 "Connection registered" / "Registered tunnel connection"
-      if (state !== "running" && /(Connection registered|Registered tunnel connection)/i.test(text)) {
-        state = "running";
-        restartAttempt = 0;
-        log.info(`tunnel: ready (named: ${opts.tunnelName})`);
-        notifyUrl();
-      }
-    };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
-    child.on("error", (err) => handleSpawnFailure(err));
-    child.on("exit", (code, signal) => {
-      log.warn("tunnel: cloudflared exited", { code, signal, name: opts.tunnelName });
-      proc = null;
-      if (!stopRequested && !degraded) scheduleRestart();
-      else state = "stopped";
-    });
-  };
-
-  const handleSpawnFailure = (err: unknown) => {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOENT") {
-      degraded = true;
-      state = "external";
-      log.warn(
-        "tunnel: cloudflared not in PATH — auto-spawn disabled, falling back to external (你需要自己跑 `cloudflared tunnel run`)",
-      );
-      return;
-    }
-    log.error("tunnel: spawn error", { err: String(err) });
-    state = "error";
-    scheduleRestart();
-  };
-
-  const scheduleRestart = () => {
-    if (stopRequested || degraded) return;
-    if (restartAttempt >= RESTART_DELAYS_MS.length) {
-      state = "error";
-      log.error("tunnel: giving up after max restart attempts");
-      return;
-    }
-    const delay = RESTART_DELAYS_MS[restartAttempt] ?? 16_000;
-    restartAttempt += 1;
-    state = "restarting";
-    setTimeout(() => {
-      if (!stopRequested) spawnOnce();
-    }, delay);
-  };
-
-  spawnOnce();
-
-  return {
-    status: () => ({
-      mode: "named",
-      url,
-      state,
-      port: opts.port,
-      message: degraded
-        ? "cloudflared not in PATH — manual mode"
-        : state === "running"
-          ? `named tunnel "${opts.tunnelName}" running`
-          : `啟動中 (${opts.tunnelName})`,
-    }),
-    restart: async () => {
-      if (degraded) {
-        log.warn("tunnel: restart noop — degraded to external");
-        return;
-      }
-      restartAttempt = 0;
-      if (proc) proc.kill("SIGTERM");
-      else spawnOnce();
-    },
-    stop: async () => {
-      stopRequested = true;
-      if (proc) proc.kill("SIGTERM");
-      proc = null;
-      state = "stopped";
-    },
-    onUrl: (cb) => {
-      subscribers.add(cb);
-      if (url && state === "running") cb(url);
-      return () => subscribers.delete(cb);
-    },
-  };
-}
-
-function quickController(opts: StartOpts): TunnelController {
-  let proc: ChildProcess | null = null;
-  let state: TunnelStatus["state"] = "starting";
-  let url: string | null = null;
-  let restartAttempt = 0;
-  let stopRequested = false;
-  const subscribers = new Set<(url: string) => void>();
-  const updateUrl = (next: string) => {
-    if (next === url) return;
-    url = next;
-    for (const cb of subscribers) {
-      try {
-        cb(next);
-      } catch (err) {
-        log.warn("tunnel: subscriber error", { err: String(err) });
-      }
-    }
-  };
-
-  const spawnOnce = () => {
-    state = restartAttempt === 0 ? "starting" : "restarting";
-    log.info("tunnel: spawning cloudflared quick tunnel", { port: opts.port, attempt: restartAttempt });
-    const child = spawn(
-      "cloudflared",
-      ["tunnel", "--url", `http://localhost:${opts.port}`, "--no-autoupdate", "--metrics", "127.0.0.1:0"],
-      { stdio: ["ignore", "pipe", "pipe"] },
+  if (url) {
+    log.info(`tunnel: external mode，公開 URL = ${url}（請確認常駐 tunnel 已轉發到 localhost:${opts.port}）`);
+  } else {
+    log.warn(
+      "tunnel: LINE_PUBLIC_URL 未設定——channel 只 listen port。" +
+        "請自行起一條常駐 tunnel（建議 cloudflared named tunnel），" +
+        "在 .env 設 LINE_PUBLIC_URL，並把 LINE webhook 設成 <LINE_PUBLIC_URL>/webhook。",
     );
-    proc = child;
-
-    const onData = (chunk: Buffer | string) => {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const match = text.match(TRYCLOUDFLARE_RE);
-      if (match && match[0]) {
-        state = "running";
-        restartAttempt = 0;
-        updateUrl(match[0]);
-        log.info(`tunnel: ready ${match[0]}/webhook`);
-      }
-    };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
-    child.on("error", (err) => {
-      state = "error";
-      log.error("tunnel: spawn error", { err: String(err) });
-      scheduleRestart();
-    });
-    child.on("exit", (code, signal) => {
-      log.warn("tunnel: cloudflared exited", { code, signal });
-      proc = null;
-      url = null;
-      if (!stopRequested) scheduleRestart();
-      else state = "stopped";
-    });
-  };
-
-  const scheduleRestart = () => {
-    if (stopRequested) return;
-    if (restartAttempt >= RESTART_DELAYS_MS.length) {
-      state = "error";
-      log.error("tunnel: giving up after max restart attempts");
-      return;
-    }
-    const delay = RESTART_DELAYS_MS[restartAttempt] ?? 16_000;
-    restartAttempt += 1;
-    state = "restarting";
-    setTimeout(() => {
-      if (!stopRequested) spawnOnce();
-    }, delay);
-  };
-
-  spawnOnce();
+  }
 
   return {
     status: () => ({
-      mode: "quick",
       url,
-      state,
+      state: "external",
       port: opts.port,
-      message: url ? undefined : "等待 cloudflared 公布 URL…",
+      message: url
+        ? "tunnel 由使用者自管（建議常駐 cloudflared named tunnel）；channel 只 listen port"
+        : "LINE_PUBLIC_URL 未設定；請設好固定 tunnel URL 後重啟 channel",
     }),
-    restart: async () => {
-      restartAttempt = 0;
-      if (proc) {
-        proc.kill("SIGTERM");
-        // exit handler 會 scheduleRestart
-      } else {
-        spawnOnce();
-      }
-    },
-    stop: async () => {
-      stopRequested = true;
-      if (proc) proc.kill("SIGTERM");
-      proc = null;
-      state = "stopped";
-    },
     onUrl: (cb) => {
       subscribers.add(cb);
       if (url) cb(url);

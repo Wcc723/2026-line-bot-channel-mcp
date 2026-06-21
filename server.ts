@@ -75,14 +75,11 @@ async function main() {
     shutdown.add("pidfile", () => removePidFile(pidFilePath));
   }
 
-  // Tunnel
+  // Tunnel：channel 不再代管 cloudflared，只持有使用者自管 tunnel 的公開 URL
   const tunnel = startTunnel({
-    mode: config.tunnelMode,
     port: config.webhookPort,
     publicUrl: config.publicUrl,
-    tunnelName: config.tunnelName,
   });
-  shutdown.add("tunnel", () => tunnel.stop());
 
   // MCP server (stdio)
   const mcp = await startMcpServer({
@@ -121,7 +118,7 @@ async function main() {
     });
   }
 
-  log.info(`channel: ready (mode=${config.tunnelMode}, port=${config.webhookPort})`);
+  log.info(`channel: ready (port=${config.webhookPort}, tunnel=user-managed)`);
 }
 
 main().catch((err) => {

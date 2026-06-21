@@ -12,7 +12,6 @@ const ENV_KEYS = [
   "LINE_CHANNEL_SECRET",
   "LINE_WEBHOOK_PORT",
   "LINE_PUBLIC_URL",
-  "LINE_TUNNEL_MODE",
   "LINE_API_BASE",
 ];
 
@@ -47,7 +46,6 @@ describe("loadConfig", () => {
     expect(c.channelAccessToken).toBe("");
     expect(c.channelSecret).toBe("");
     expect(c.webhookPort).toBe(8788);
-    expect(c.tunnelMode).toBe("quick");
     expect(c.publicUrl).toBeUndefined();
     expect(c.stateDir).toBe(tmp);
   });
@@ -59,7 +57,6 @@ describe("loadConfig", () => {
         "LINE_CHANNEL_ACCESS_TOKEN=abc123",
         'LINE_CHANNEL_SECRET="sec456"',
         "LINE_WEBHOOK_PORT=9000",
-        "LINE_TUNNEL_MODE=named",
         "LINE_PUBLIC_URL=https://example.com",
         "# 註解略過",
         "",
@@ -70,7 +67,6 @@ describe("loadConfig", () => {
     expect(c.channelAccessToken).toBe("abc123");
     expect(c.channelSecret).toBe("sec456");
     expect(c.webhookPort).toBe(9000);
-    expect(c.tunnelMode).toBe("named");
     expect(c.publicUrl).toBe("https://example.com");
   });
 
@@ -80,12 +76,6 @@ describe("loadConfig", () => {
     const { loadConfig } = await freshLoad();
     const c = loadConfig();
     expect(c.channelAccessToken).toBe("from-env");
-  });
-
-  it("非法 tunnelMode 退回 quick", async () => {
-    writeFileSync(join(tmp, ".env"), "LINE_TUNNEL_MODE=foo\n");
-    const { loadConfig } = await freshLoad();
-    expect(loadConfig().tunnelMode).toBe("quick");
   });
 
   it("ensureStateDir 會建立目錄", async () => {

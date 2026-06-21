@@ -8,8 +8,11 @@
 # 這個腳本會：
 #   1. 檢查 / 安裝 bun、cloudflared
 #   2. 透過 marketplace 裝 plugin
-#   3. 檢查 LINE secrets 與（如果用 named tunnel）Cloudflare credentials 是否就位
+#   3. 檢查 LINE secrets 與（自管 named tunnel 的）Cloudflare credentials 是否就位
 #   4. 印出下一步要怎麼啟動
+#
+# 注意：channel 不會幫你跑 cloudflared。tunnel 由你自管成常駐服務
+#       （見 README「Quick Start 步驟 2-1」）。
 
 set -euo pipefail
 
@@ -85,52 +88,37 @@ else
       LINE_CHANNEL_ACCESS_TOKEN=<你的 token>
       LINE_CHANNEL_SECRET=<你的 secret>
       LINE_WEBHOOK_PORT=8788
-      LINE_TUNNEL_MODE=named
-      LINE_PUBLIC_URL=https://line-bot.example.com
+      LINE_PUBLIC_URL=https://line-bot.example.com   # 你自管常駐 tunnel 的固定網域
 
   搬法選一個：scp、AirDrop、1Password、加密 USB。**不要走 email 或 git。**
   寫完後 chmod 600 ~/.claude/channels/line/.env
 EOF
 fi
 
-# 5. Tunnel 模式檢查 ────────────────────────────────────────────
-step "檢查 Cloudflare Tunnel 設定"
+# 5. Cloudflare Tunnel 設定檢查 ─────────────────────────────────
+step "檢查 Cloudflare Named Tunnel 設定"
 
-MODE="quick"
-if [ -f "$ENV_FILE" ]; then
-  MODE=$(awk -F= '/^LINE_TUNNEL_MODE=/ { v=substr($0, length($1)+2); gsub(/["'"'"']/, "", v); print v }' "$ENV_FILE")
-  MODE=${MODE:-quick}
-fi
+if [ -f "$CF_DIR/config.yml" ] && ls "$CF_DIR"/*.json >/dev/null 2>&1; then
+  ok "named tunnel：config.yml + credentials json 都在"
+  echo ""
+  echo "  ⚠ 記得確認 ~/.cloudflared/config.yml 裡的 credentials-file 路徑"
+  echo "    指向這台機器的 home（如果 username 變了的話）。"
+  echo "  ⚠ tunnel 要跑成「常駐服務」才不會斷線（channel 不會幫你跑）："
+  echo "      sudo cloudflared service install"
+  echo "      cloudflared tunnel info <your-tunnel-name>   # 確認連線"
+else
+  warn "~/.cloudflared/ 不完整或還沒設 named tunnel"
+  cat <<EOF
 
-case "$MODE" in
-  named)
-    if [ -f "$CF_DIR/config.yml" ] && ls "$CF_DIR"/*.json >/dev/null 2>&1; then
-      ok "named tunnel：config.yml + credentials json 都在"
-      echo ""
-      echo "  ⚠ 記得確認 ~/.cloudflared/config.yml 裡的 credentials-file 路徑"
-      echo "    指向新機器的 home（如果 username 變了的話）。"
-    else
-      warn "named tunnel 但 ~/.cloudflared/ 不完整"
-      cat <<EOF
-
-  從舊機器複製：
+  若你用 Cloudflare Named Tunnel（推薦），從舊機器複製：
       ~/.cloudflared/config.yml
       ~/.cloudflared/<tunnel-id>.json
+  並把 config.yml 內 credentials-file 改成這台機器的路徑。
 
-  並把 config.yml 內 credentials-file 改成新機器路徑。
+  全新設定 + 跑成常駐服務的步驟，見 README「Quick Start 步驟 2」。
+  （也可用 ngrok / 其他工具，只要 URL 固定並填進 LINE_PUBLIC_URL。）
 EOF
-    fi
-    ;;
-  external)
-    ok "external tunnel — 你自己用 ngrok / 其他工具管 tunnel"
-    ;;
-  quick)
-    ok "quick tunnel — channel 啟動時會自動 spawn cloudflared"
-    ;;
-  *)
-    warn "未知的 LINE_TUNNEL_MODE = $MODE"
-    ;;
-esac
+fi
 
 # 6. 完成 ────────────────────────────────────────────────────
 step "完成"
@@ -139,13 +127,9 @@ cat <<'EOF'
 
 ✅ Plugin 安裝完成。下一步啟動：
 
-EOF
-
-case "$MODE" in
-  named)
-    cat <<'EOF'
-  1. 起 cloudflared tunnel（背景或新終端）：
-       cloudflared tunnel run <your-tunnel-name>
+  1. 先確認你的常駐 tunnel 在跑（channel 不會幫你起 cloudflared）：
+       cloudflared tunnel info <your-tunnel-name>   # 看到 4 條 connection 即 OK
+     沒裝成服務的話，先依 README 步驟 2-1 跑成常駐服務。
 
   2. 起 Claude session（注意：不要在 plugin 源碼目錄裡跑）：
        cd ~
@@ -153,23 +137,10 @@ case "$MODE" in
 
   3. 進去後 /mcp 應顯示 plugin:line:line · ✔ connected
 
-  4. 從手機 LINE 傳訊息給 bot 驗證
+  4. /line:tunnel url 取得 webhook URL，貼到 LINE Developers Console
+     （或用 README 提供的 PUT /v2/bot/channel/webhook/endpoint API）
+
+  5. 從手機 LINE 傳訊息驗證
 
 ⚠ 不要兩台同時跑 channel server，access.json 會分裂、訊息會搶。
 EOF
-    ;;
-  *)
-    cat <<'EOF'
-  1. 起 Claude session（注意：不要在 plugin 源碼目錄裡跑）：
-       cd ~
-       claude --dangerously-load-development-channels plugin:line@line-bot-channel
-
-  2. 進去後 /mcp 應顯示 plugin:line:line · ✔ connected
-
-  3. /line:tunnel url 取得 webhook URL，貼到 LINE Developers Console
-     （或用 README 提供的 PUT /v2/bot/channel/webhook/endpoint API）
-
-  4. 從手機 LINE 傳訊息驗證
-EOF
-    ;;
-esac

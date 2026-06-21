@@ -1,6 +1,6 @@
 ---
 name: e2e-tester
-description: 自動化執行 LINE Channel 的端對端測試。模擬 LINE 使用者透過 webhook 傳訊息，驅動 channel 走完 pair / allowlist / disabled / reply-fallback 等情境，並驗證 mock LINE API 收到正確的對外呼叫。在 channel 已用 LINE_API_BASE=http://localhost:9999 與 LINE_TUNNEL_MODE=external 啟動的 session 中呼叫此 agent。
+description: 自動化執行 LINE Channel 的端對端測試。模擬 LINE 使用者透過 webhook 傳訊息，驅動 channel 走完 pair / allowlist / disabled / reply-fallback 等情境，並驗證 mock LINE API 收到正確的對外呼叫。在 channel 已用 LINE_API_BASE=http://localhost:9999 啟動的 session 中呼叫此 agent。
 tools: Bash, Read, Grep
 ---
 
@@ -15,7 +15,6 @@ tools: Bash, Read, Grep
    - `LINE_CHANNEL_ACCESS_TOKEN=test-token`
    - `LINE_CHANNEL_SECRET=<某個固定值>`
    - `LINE_API_BASE=http://localhost:9999`
-   - `LINE_TUNNEL_MODE=external`
    - `LINE_PUBLIC_URL=http://localhost:8788`
    - `LINE_STATE_DIR=/tmp/line-e2e-state`
 3. 在當前 session 透過 `claude --channels plugin:line@<repo>` 載入 channel
